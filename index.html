@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inside the Forward Pass</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+body{margin:0}[hidden]{display:none!important}img{max-width:100%}
+/* Layout: a lab-notebook column. One pipeline rail you click through, a bench below it for the selected stage, then the KV cache and memory sections. Q/K/V colors are information, used everywhere they appear. */
+:root{
+  --bg:#F1F3F6; --surface:#FFFFFF; --sunk:#E7EBF0; --ink:#152030; --muted:#5A6576; --line:#D5DCE5;
+  --q:#4B57D1; --k:#B8720E; --v:#0F8577; --ffn:#8C47B8;
+  --pos:#C9472E; --neg:#3569A3; --hl:#152030;
+  --f-display:"Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --f-body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0E131A; --surface:#161D27; --sunk:#1D2531; --ink:#E5EAF1; --muted:#95A1B3; --line:#2A3544;
+  --q:#8E97F4; --k:#E6A84E; --v:#43C3B0; --ffn:#BE8EE8; --pos:#F07E62; --neg:#73A6DD; --hl:#E5EAF1; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0E131A; --surface:#161D27; --sunk:#1D2531; --ink:#E5EAF1; --muted:#95A1B3; --line:#2A3544;
+  --q:#8E97F4; --k:#E6A84E; --v:#43C3B0; --ffn:#BE8EE8; --pos:#F07E62; --neg:#73A6DD; --hl:#E5EAF1; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15.5px;line-height:1.6;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:28px 64px}
+.wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.1}
+h1{font-size:clamp(2.1rem,5.5vw,3.5rem);font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(1.5rem,3.2vw,2.1rem);font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.15rem;font-weight:700}
+p{margin:0;max-width:66ch}
+.eyebrow{font-family:var(--f-mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.q{color:var(--q)}.k{color:var(--k)}.v{color:var(--v)}.f{color:var(--ffn)}
+b.q,b.k,b.v,b.f{font-weight:600}
+
+/* hero */
+header{display:flex;flex-direction:column;gap:18px}
+.sentence{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:6px}
+.tok{font-family:var(--f-mono);font-size:1rem;padding:6px 12px;border:1.5px solid var(--ink);border-radius:4px;background:var(--surface)}
+.tok.ghost{border-style:dashed;color:var(--muted);border-color:var(--muted)}
+.lede{font-size:1.08rem;color:var(--muted)}
+
+/* rail */
+section{display:flex;flex-direction:column;gap:20px}
+.rail-wrap{overflow-x:auto;margin-inline:-4px;padding:4px}
+.rail{display:flex;gap:0;min-width:max-content;counter-reset:st}
+.st{appearance:none;border:0;background:none;color:var(--muted);font:inherit;cursor:pointer;display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  padding:10px 14px 12px;border-bottom:2px solid var(--line);min-width:96px;text-align:left}
+.st .n{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.08em}
+.st .t{font-size:.86rem;font-weight:500;line-height:1.25;color:var(--ink);opacity:.72}
+.st:hover .t{opacity:1}
+.st[aria-current="true"]{border-bottom:3px solid var(--ink)}
+.st[aria-current="true"] .t{opacity:1;font-weight:600}
+.st[aria-current="true"] .n{color:var(--ink)}
+.st:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--q);outline-offset:2px}
+
+.bench{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:28px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:24px}
+@media (max-width:860px){.bench{grid-template-columns:1fr;padding:18px}}
+.viz{min-width:0;display:flex;flex-direction:column;gap:14px}
+.expl{min-width:0;display:flex;flex-direction:column;gap:12px}
+.expl p{color:var(--ink)}
+.expl .note{font-size:.88rem;color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
+.navrow{display:flex;gap:10px;margin-top:auto;padding-top:8px}
+.btn{appearance:none;font:inherit;font-size:.9rem;font-weight:500;border:1.5px solid var(--ink);background:var(--surface);color:var(--ink);padding:7px 14px;border-radius:6px;cursor:pointer}
+.btn.solid{background:var(--ink);color:var(--surface)}
+.btn:disabled{opacity:.35;cursor:default}
+.btn:hover:not(:disabled){transform:translateY(-1px)}
+
+/* matrices */
+.eq{overflow-x:auto;padding-bottom:4px}
+.eq-row{display:flex;align-items:center;gap:12px;min-width:max-content}
+.op{font-family:var(--f-mono);font-size:1.2rem;color:var(--muted)}
+.mblock{display:flex;flex-direction:column;gap:6px}
+.mname{font-family:var(--f-mono);font-size:.78rem;color:var(--muted)}
+.mname b{font-weight:600}
+table.m{border-collapse:separate;border-spacing:3px;font-family:var(--f-mono);font-variant-numeric:tabular-nums;font-size:.78rem}
+table.m td{width:52px;height:30px;text-align:center;border-radius:3px;color:var(--ink)}
+table.m th{font-weight:500;color:var(--muted);font-size:.74rem;padding:0 6px;text-align:right;white-space:nowrap}
+table.m thead th{text-align:center;padding:0 0 2px}
+table.m tr.click{cursor:pointer}
+table.m tr.sel td{outline:1.5px solid var(--hl)}
+table.m tr.dim td{opacity:.35}
+table.m td.mask{background:repeating-linear-gradient(135deg,var(--sunk) 0 4px,transparent 4px 8px);color:var(--muted)}
+table.m td.zero{text-decoration:line-through;color:var(--muted)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{appearance:none;font:inherit;font-family:var(--f-mono);font-size:.82rem;padding:5px 12px;border-radius:999px;border:1.5px solid currentColor;background:transparent;cursor:pointer}
+.tab[aria-pressed="true"]{background:currentColor}
+.tab[aria-pressed="true"] span{color:var(--surface)}
+.hint{font-size:.82rem;color:var(--muted)}
+.qkvrow{display:flex;flex-direction:column;gap:8px;padding:12px 12px 12px 14px;border-left:4px solid var(--role);border-radius:4px;background:var(--surface);cursor:pointer;opacity:.5;transition:opacity .25s,background .25s}
+.qkvrow.on{opacity:1;background:color-mix(in oklab,var(--role) 7%,var(--surface))}
+.qkvrow:hover{opacity:.85}.qkvrow.on:hover{opacity:1}
+.qkvhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.eq-row.wrapok{flex-wrap:wrap;min-width:0}
+@media (max-width:560px){table.m td{width:40px;height:26px;font-size:.68rem}table.m{border-spacing:2px}}
+
+.callout{font-size:.92rem;background:var(--sunk);border-radius:6px;padding:10px 12px}
+
+/* bars */
+.bars{display:flex;flex-direction:column;gap:6px}
+.bar{display:grid;grid-template-columns:64px minmax(0,1fr) 56px;gap:10px;align-items:center;font-family:var(--f-mono);font-size:.82rem}
+.bar .track{height:16px;background:var(--sunk);border-radius:3px;overflow:hidden}
+.bar .fill{height:100%;background:var(--ink);border-radius:3px;transition:width .35s ease}
+.bar.top .fill{background:var(--pos)}
+.bar .val{text-align:right;color:var(--muted)}
+
+/* layer stack */
+.stack{display:flex;flex-direction:column-reverse;gap:3px;max-width:420px}
+.lyr{display:grid;grid-template-columns:56px 1fr 1fr;gap:3px;font-family:var(--f-mono);font-size:.72rem;align-items:center}
+.lyr .a,.lyr .b{height:20px;border-radius:3px;display:flex;align-items:center;padding-left:8px}
+.lyr .a{background:color-mix(in oklab,var(--q) 22%,var(--surface))}
+.lyr .b{background:color-mix(in oklab,var(--ffn) 22%,var(--surface))}
+.lyr.gap{grid-template-columns:1fr;text-align:center;color:var(--muted)}
+.lyr.on .a,.lyr.on .b{outline:1.5px solid var(--hl)}
+
+/* ffn */
+.relu svg{width:150px;height:auto}
+.axis{stroke:var(--line);stroke-width:1.5}
+.curve{stroke:var(--pos);stroke-width:3;fill:none}
+.svgt{fill:var(--muted);font-family:var(--f-mono);font-size:10px}
+
+/* KV cache */
+.kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);gap:24px}
+@media (max-width:860px){.kv{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.wgrid{display:flex;flex-direction:column;gap:6px}
+.wrow{display:grid;grid-template-columns:52px repeat(4,1fr) 1.6fr;gap:4px;font-family:var(--f-mono);font-size:.7rem}
+.wrow span{padding:5px 0;text-align:center;border-radius:3px}
+.wrow .lb{text-align:left;color:var(--muted)}
+.wq{background:color-mix(in oklab,var(--q) 20%,var(--surface))}
+.wk{background:color-mix(in oklab,var(--k) 22%,var(--surface))}
+.wv{background:color-mix(in oklab,var(--v) 22%,var(--surface))}
+.wo{background:var(--sunk)}
+.wf{background:color-mix(in oklab,var(--ffn) 20%,var(--surface))}
+.lock{font-size:.82rem;color:var(--muted)}
+.seq{display:flex;flex-wrap:wrap;gap:6px}
+.seq .tok{font-size:.85rem;padding:4px 9px}
+.seq .tok.new{background:var(--ink);color:var(--surface)}
+.cache{display:flex;flex-direction:column;gap:12px;overflow-x:auto}
+.crow{display:grid;grid-template-columns:52px 64px minmax(0,1fr);gap:8px;align-items:center;min-width:0}
+.crow .lb{font-family:var(--f-mono);font-size:.72rem;color:var(--muted)}
+.qchip{font-family:var(--f-mono);font-size:.72rem;padding:3px 6px;border-radius:4px;background:color-mix(in oklab,var(--q) 22%,var(--surface));color:var(--q);text-align:center;transition:opacity .5s}
+.qchip.gone{opacity:.25;text-decoration:line-through}
+.strips{display:flex;flex-direction:column;gap:3px;min-width:0}
+.strip{display:flex;gap:3px;flex-wrap:wrap}
+.cell{width:26px;height:16px;border-radius:2px;font-family:var(--f-mono);font-size:.6rem;display:flex;align-items:center;justify-content:center}
+.cell.kc{background:color-mix(in oklab,var(--k) 55%,var(--surface))}
+.cell.vc{background:color-mix(in oklab,var(--v) 55%,var(--surface))}
+.cell.new{outline:2px solid var(--hl);animation:pop .45s ease}
+@keyframes pop{from{transform:scale(.3);opacity:0}to{transform:none;opacity:1}}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:560px){.stats{grid-template-columns:1fr}}
+.stat{border-top:2px solid var(--ink);padding-top:8px;display:flex;flex-direction:column;gap:2px}
+.stat .num{font-family:var(--f-display);font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .lbl{font-size:.82rem;color:var(--muted)}
+.log{font-size:.9rem;min-height:3.2em}
+
+/* memory */
+.stackbar{display:flex;height:40px;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+.stackbar div{display:flex;align-items:center;justify-content:center;font-family:var(--f-mono);font-size:.72rem;color:var(--surface);min-width:0;overflow:hidden;white-space:nowrap}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.82rem;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.tbl-wrap{overflow-x:auto}
+table.t{border-collapse:collapse;width:100%;font-size:.9rem}
+table.t th,table.t td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+table.t td.n,table.t th.n{text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+table.t tr.total td{font-weight:600;border-bottom:2px solid var(--ink)}
+.calc{display:flex;flex-direction:column;gap:12px}
+.calc label{font-size:.9rem}
+input[type=range]{width:100%;accent-color:var(--ink)}
+.chk{display:flex;gap:8px;align-items:center;font-size:.9rem}
+.compare{display:flex;flex-direction:column;gap:6px}
+footer{font-size:.82rem;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+<header>
+  <span class="eyebrow">How a transformer picks the next token</span>
+  <h1>Inside the Forward Pass</h1>
+  <p class="lede">Follow three tokens through one layer of a transformer, out to a probability for every word, and back in again. Every number on this page is computed live from small toy weights, so the matrices stay consistent with each other.</p>
+  <div class="sentence" aria-label="Example input">
+    <span class="tok">I</span><span class="tok">am</span><span class="tok">Nipun</span><span class="tok ghost">?</span>
+  </div>
+</header>
+
+<section id="pipeline">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 1 · The pipeline</span>
+    <h2>Click any stage</h2>
+  </div>
+  <div class="rail-wrap"><div class="rail" id="rail" role="tablist"></div></div>
+  <div class="bench">
+    <div class="viz" id="viz"></div>
+    <div class="expl">
+      <span class="eyebrow" id="stEye"></span>
+      <h3 id="stTitle"></h3>
+      <div id="stBody" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="navrow">
+        <button class="btn" id="prev">← Previous</button>
+        <button class="btn solid" id="next">Next →</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="kvcache">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 2 · Generating, token by token</span>
+    <h2>Fixed weights, growing cache</h2>
+    <p>The weights never change and never move. What grows is the KV cache: every token's key and value, kept per layer so later tokens can look back without recomputing them. The query is built, used once, and thrown away.</p>
+  </div>
+  <div class="kv">
+    <div class="panel">
+      <h3>Weights</h3>
+      <span class="lock">Loaded once at startup, read on every step. 4 of 64 layers shown.</span>
+      <div class="wgrid" id="wgrid"></div>
+      <span class="lock">Same 280 GB whether the context is 3 tokens or 100,000.</span>
+    </div>
+    <div class="panel">
+      <h3>KV cache</h3>
+      <div class="seq" id="seq"></div>
+      <div class="cache" id="cache"></div>
+      <div class="log callout" id="log"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn solid" id="gen">Generate next token</button>
+        <button class="btn" id="kvreset">Reset</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="num" id="sTok">3</span><span class="lbl">tokens in cache</span></div>
+        <div class="stat"><span class="num" id="sNew">3</span><span class="lbl">new K,V pairs per layer this step</span></div>
+        <div class="stat"><span class="num" id="sMB">9.4 MB</span><span class="lbl">cache size at 140B scale</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="memory">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 3 · Where the memory goes</span>
+    <h2>A 140B model, weight by weight</h2>
+    <p>Assumed shape: hidden size 12,288, 64 layers, SwiGLU feed-forward of width 43,008, fp16 (2 bytes per parameter). The feed-forward weights, not attention, hold most of the model.</p>
+  </div>
+  <div class="panel">
+    <div class="stackbar" id="sbar"></div>
+    <div class="legend">
+      <span><i style="background:var(--q)"></i>W_Q</span><span><i style="background:var(--k)"></i>W_K</span><span><i style="background:var(--v)"></i>W_V</span><span><i style="background:var(--muted)"></i>W_O</span><span><i style="background:var(--ffn)"></i>Feed-forward</span>
+    </div>
+    <div class="tbl-wrap"><table class="t">
+      <thead><tr><th>Component</th><th class="n">One layer</th><th class="n">All 64 layers</th><th class="n">Params</th><th class="n">Share</th></tr></thead>
+      <tbody>
+        <tr><td><b class="q">W_Q</b> query</td><td class="n">302 MB</td><td class="n">19.3 GB</td><td class="n">9.7B</td><td class="n">6.9%</td></tr>
+        <tr><td><b class="k">W_K</b> key</td><td class="n">302 MB</td><td class="n">19.3 GB</td><td class="n">9.7B</td><td class="n">6.9%</td></tr>
+        <tr><td><b class="v">W_V</b> value</td><td class="n">302 MB</td><td class="n">19.3 GB</td><td class="n">9.7B</td><td class="n">6.9%</td></tr>
+        <tr><td><b>W_O</b> output projection</td><td class="n">302 MB</td><td class="n">19.3 GB</td><td class="n">9.7B</td><td class="n">6.9%</td></tr>
+        <tr><td><b class="f">Feed-forward</b> (3 matrices)</td><td class="n">3.17 GB</td><td class="n">203 GB</td><td class="n">101.5B</td><td class="n">72.5%</td></tr>
+        <tr class="total"><td>Total weights</td><td class="n">4.38 GB</td><td class="n">280 GB</td><td class="n">140B</td><td class="n">100%</td></tr>
+      </tbody>
+    </table></div>
+    <p class="hint">Embedding and output-vocabulary matrices (about 0.6B params each for a 50k vocabulary) are left out; they don't change the picture.</p>
+  </div>
+  <div class="panel calc">
+    <h3>And the KV cache on top</h3>
+    <p>Per token, every layer stores one key and one value of size 12,288. That's 2 × 64 × 12,288 × 2 bytes ≈ <b class="mono">3.15 MB per token</b>.</p>
+    <label for="ctx">Context length: <b class="mono" id="ctxV">8,192</b> tokens</label>
+    <input type="range" id="ctx" min="0" max="7" step="1" value="3">
+    <label class="chk" for="gqa"><input type="checkbox" id="gqa"> Grouped-query attention (96 query heads share 8 key/value heads)</label>
+    <div class="compare" id="cmp"></div>
+    <p class="hint" id="cmpNote"></p>
+  </div>
+</section>
+
+<footer>Toy model: 4-dimensional vectors, one attention head, layer norm omitted for clarity. Real models use thousands of dimensions and dozens of heads, but every step has the same shape.</footer>
+</div>
+
+<script>
+(()=>{
+/* ---------- toy math ---------- */
+const TOK=["I","am","Nipun"], IDS=[40,716,45831];
+function rng(s){return()=>{s=(s*1664525+1013904223)%4294967296;return s/4294967296}}
+function randM(r,c,seed,sc){const g=rng(seed);return Array.from({length:r},()=>Array.from({length:c},()=>+((g()*2-1)*sc).toFixed(2)))}
+const mm=(A,B)=>A.map(r=>B[0].map((_,j)=>r.reduce((s,a,k)=>s+a*B[k][j],0)));
+const T=A=>A[0].map((_,j)=>A.map(r=>r[j]));
+const add=(A,B)=>A.map((r,i)=>r.map((x,j)=>x+B[i][j]));
+const sm=v=>{const m=Math.max(...v.filter(isFinite));const e=v.map(x=>isFinite(x)?Math.exp(x-m):0);const s=e.reduce((a,b)=>a+b,0);return e.map(x=>x/s)};
+
+const EMB=[[0.9,-0.3,0.4,0.1],[0.2,0.8,-0.5,0.3],[-0.6,0.4,0.9,-0.7]];
+const POS=[[0,0.1,0,0.1],[0.1,0,0.1,0],[0,-0.1,0,0.1]];
+const X=add(EMB,POS);
+const WQ=randM(4,4,11,0.9),WK=randM(4,4,23,0.9),WV=randM(4,4,37,0.9),WO=randM(4,4,41,0.6);
+const Q=mm(X,WQ),K=mm(X,WK),V=mm(X,WV);
+const S=mm(Q,T(K)).map((r,i)=>r.map((x,j)=>j>i?-Infinity:x/2));
+const A=S.map(sm);
+const Z=mm(A,V);
+const AO=mm(Z,WO);
+const H1=add(X,AO);
+const W1=randM(4,8,53,0.8),W2=randM(8,4,67,0.5);
+const PRE=mm(H1,W1), POST=PRE.map(r=>r.map(x=>Math.max(0,x)));
+const FO=mm(POST,W2);
+const H2=add(H1,FO);
+const VOC=["is","and","here","!","am","I","Nipun","."];
+const WOUT=randM(4,8,79,0.9), BOUT=[1.3,1.0,0.3,0.1,-0.9,-0.3,-1.3,0.5];
+const LOG=VOC.map((_,j)=>H2[2].reduce((s,x,k)=>s+x*WOUT[k][j],0)+BOUT[j]);
+
+/* ---------- render helpers ---------- */
+const f2=x=>(Math.abs(x)<0.005?0:x).toFixed(2);
+function bg(v,max,tint){if(!isFinite(v))return"";const a=Math.min(Math.abs(v)/max,1)*62;return`background:color-mix(in oklab,var(${tint||(v>=0?"--pos":"--neg")}) ${(tint?8+a*.8:a).toFixed(0)}%,var(--surface))`}
+function mat(M,o={}){
+  const max=o.max||Math.max(...M.flat().filter(isFinite).map(Math.abs),0.01);
+  let h=`<table class="m"><thead><tr><th></th>${(o.cols||M[0].map((_,j)=>"d"+(j+1))).map(c=>`<th>${c}</th>`).join("")}</tr></thead><tbody>`;
+  M.forEach((r,i)=>{
+    const cls=[o.click?"click":"",o.sel===i?"sel":"",o.dim&&o.dim.includes(i)?"dim":""].join(" ");
+    h+=`<tr class="${cls}" ${o.click?`data-row="${i}" tabindex="0"`:""}><th>${o.rows?o.rows[i]:i+1}</th>`;
+    r.forEach((x,j)=>{
+      if(!isFinite(x)){h+=`<td class="mask">—</td>`;return}
+      const z=o.zero&&o.zeroM&&o.zeroM[i][j]<=0;
+      h+=`<td class="${z?"zero":""}" style="${z?"":bg(x,max,o.tint)}">${o.pct?(x*100).toFixed(0)+"%":f2(o.zeroM&&z?o.zeroM[i][j]:x)}</td>`});
+    h+="</tr>"});
+  return h+"</tbody></table>"}
+const blk=(name,html)=>`<div class="mblock"><span class="mname">${name}</span>${html}</div>`;
+const eq=(...p)=>`<div class="eq"><div class="eq-row">${p.join("")}</div></div>`;
+const op=s=>`<span class="op">${s}</span>`;
+
+let sel=2, qkv="Q", temp=1, pick=null;
+const ROLE={Q:["--q","Query",WQ,Q],K:["--k","Key",WK,K],V:["--v","Value",WV,V]};
+
+function bars(probs,labels){
+  const m=Math.max(...probs);const order=probs.map((p,i)=>i).sort((a,b)=>probs[b]-probs[a]);
+  return`<div class="bars">${order.map(i=>`<div class="bar ${probs[i]===m?"top":""}"><span>${labels[i]}</span><div class="track"><div class="fill" style="width:${(probs[i]/m*100).toFixed(1)}%"></div></div><span class="val">${(probs[i]*100).toFixed(1)}%</span></div>`).join("")}</div>`}
+
+/* ---------- stages ---------- */
+const STAGES=[
+{t:"Tokens",viz:()=>`<div class="sentence">${TOK.map((t,i)=>`<div class="mblock" style="align-items:center"><span class="tok">${t}</span><span class="mname">id ${IDS[i]}</span></div>`).join("")}</div>
+  <div class="callout">The model never sees letters. It sees <span class="mono">[40, 716, 45831]</span>, three positions into a vocabulary of roughly 50,000 entries.</div>`,
+ body:`<p>The text is split into tokens. “I am Nipun” becomes three. Each token is just an ID number, a row index into the vocabulary.</p><p>Nothing has been computed yet.</p>`},
+
+{t:"Embeddings",viz:()=>eq(blk("token ids",`<div style="display:flex;flex-direction:column;gap:3px">${TOK.map(t=>`<span class="tok" style="font-size:.8rem;padding:3px 8px">${t}</span>`).join("")}</div>`),op("→"),blk("<b>X</b> = embedding + position · 3 × 4",mat(X,{rows:TOK})))+`<p class="hint">Warm = positive, cool = negative. Darker = larger magnitude.</p>`,
+ body:`<p>Each ID looks up a learned vector, a row in the embedding table. A small position signal is added so the model knows word order.</p><p>Here each vector has 4 numbers. In the 140B example it has 12,288.</p><p class="note">Result: matrix <b>X</b>, one row per token. Every later step keeps this shape: 3 rows in, 3 rows out.</p>`},
+
+{t:"Q, K, V",viz:()=>{const DESC={Q:"what each token is looking for",K:"what each token offers, so others can find it",V:"the content each token hands over when chosen"};
+  return`<div class="tabs">${["Q","K","V"].map(k=>`<button class="tab" data-qkv="${k}" aria-pressed="${k===qkv}" style="color:var(${ROLE[k][0]})"><span>${ROLE[k][1]}</span></button>`).join("")}</div>`+
+  eq(blk("<b>X</b> · 3 × 4 · the same input feeds all three",mat(X,{rows:TOK})))+
+  ["Q","K","V"].map(k=>{const[c,n,W,R]=ROLE[k];const on=k===qkv;return`<div class="qkvrow ${on?"on":""}" data-qkv="${k}" style="--role:var(${c})"><div class="qkvhead"><b style="color:var(${c})">${n}</b><span class="hint">${DESC[k]}</span></div>
+   <div class="eq"><div class="eq-row wrapok">${op("X ×")}${blk(`<b style="color:var(${c})">W_${k}</b> · 4 × 4 · learned, fixed`,mat(W,{rows:["d1","d2","d3","d4"],tint:c}))}${op("=")}${blk(`<b style="color:var(${c})">${k}</b> · 3 × 4`,mat(R,{rows:TOK,tint:c}))}</div></div></div>`}).join("")},
+ body:()=>`<p>Each layer has three learned matrices. Multiply <b>X</b> by each one and you get three new matrices from the same input.</p>
+ <p><b class="q">Query</b>: what this token is looking for.<br><b class="k">Key</b>: what this token offers, so others can find it.<br><b class="v">Value</b>: the content it hands over when it's chosen.</p>
+ <p>Tap a row or a tab to highlight it. Now showing <b style="color:var(${ROLE[qkv][0]})">${ROLE[qkv][1]}</b>: compare its numbers with the other two. Same <b>X</b>, completely different results, because each W is different.</p>
+ <p class="note">The W matrices are weights: learned in training, frozen at inference, and different in every layer. Q, K and V themselves are fresh for every input.</p>`},
+
+{t:"Scores",viz:()=>eq(blk("<b class='q'>Q</b>",mat(Q,{rows:TOK})),op("×"),blk("<b class='k'>K</b>ᵀ",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · click a row",mat(S,{rows:TOK,cols:TOK,click:1,sel})))+`<p class="hint">Hatched cells are masked: a token can't look at words that come after it.</p>`,
+ body:()=>`<p>Every query is compared with every key using a dot product, then divided by √d to keep numbers stable. A high score means “this key matches what I'm looking for.”</p><p>Row <b>${TOK[sel]}</b> holds the scores for <b>${TOK[sel]}</b>'s query against the keys it's allowed to see.</p><p class="note">The causal mask is why “I” can only attend to itself. During training this is what lets every position learn to predict the next token without peeking.</p>`},
+
+{t:"Attention matrix",viz:()=>eq(blk("<b>A</b> = softmax(scores) · the attention matrix · each row sums to 100%",mat(A,{rows:TOK,cols:TOK,pct:1,click:1,sel,max:1})))+`<div class="callout">${TOK.slice(0,sel+1).map((t,j)=>`<b>${(A[sel][j]*100).toFixed(0)}%</b> from “${t}”`).join(" · ")}</div>`,
+ body:()=>`<p>Softmax turns each row of scores into percentages. The result is <b>the attention matrix</b>, 3 × 3, one row per query and one column per key. These are the attention weights: how much each token will borrow from each earlier token.</p><p><b>${TOK[sel]}</b> splits its attention ${TOK.slice(0,sel+1).map((t,j)=>`${(A[sel][j]*100).toFixed(0)}% to “${t}”`).join(", ")}.</p><p class="hint">Click a row to switch tokens.</p>`},
+
+{t:"Attention × V",viz:()=>{const w=A[sel];const lab=s=>`<span class="eyebrow" style="font-size:.68rem">${s}</span>`;return `<div class="callout mono" style="font-size:.85rem;overflow-x:auto;white-space:nowrap">Attention(Q,K,V) = softmax( <span class="q">Q</span>·<span class="k">K</span>ᵀ / √d ) · <span class="v">V</span></div>`+
+  lab("① Query × every key")+eq(blk("<b class='q'>Q</b> · 3 × 4",mat(Q,{rows:TOK,sel})),op("×"),blk("<b class='k'>K</b>ᵀ · 4 × 3",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · 3 × 3",mat(S,{rows:TOK,cols:TOK,sel})))+
+  lab("② Softmax each row")+eq(blk("scores",mat(S,{rows:TOK,cols:TOK,sel})),op("softmax →"),blk("<b>A</b> attention matrix · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,sel,max:1})))+
+  lab("③ Attention matrix × value matrix · click a row")+eq(blk("<b>A</b> · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,click:1,sel,max:1})),op("×"),blk("<b class='v'>V</b> · 3 × 4",mat(V,{rows:TOK})),op("="),blk("<b>Z</b> output · 3 × 4",mat(Z,{rows:TOK,click:1,sel})))+
+  `<div class="callout mono" style="font-size:.8rem;overflow-x:auto">Z<sub>${TOK[sel]}</sub> = ${TOK.slice(0,sel+1).map((t,j)=>`${w[j].toFixed(2)}·V<sub>${t}</sub>`).join(" + ")} = [${Z[sel].map(f2).join(", ")}]</div>`+
+  lab("④ Then W_O, plus the input (residual)")+eq(blk("<b>Z</b>",mat(Z,{rows:TOK,sel})),op("× W_O + X ="),blk("layer output so far · 3 × 4",mat(H1,{rows:TOK,sel})))},
+ body:()=>`<p>This is the whole attention operation in one view, as three matrix multiplies.</p><p><b>①</b> The query matrix times the transposed key matrix compares every query with every key, giving a 3 × 3 grid of scores.</p><p><b>②</b> Softmax turns each row into weights. That 3 × 3 grid is the attention matrix.</p><p><b>③</b> The attention matrix times the value matrix gives the output. Row <b>${TOK[sel]}</b> of the result is that row's weights applied to every value vector and summed, so it now carries pieces of ${sel?TOK.slice(0,sel+1).map(t=>"“"+t+"”").join(", "):"only itself"}.</p><p class="note"><b>④</b> One more matrix, <b>W_O</b>, maps the result back, and it's added to the original <b>X</b>. That addition is the residual connection; it lets each layer refine rather than replace.</p>`},
+
+{t:"Feed-forward",viz:()=>`<div class="tabs">${TOK.map((t,i)=>`<button class="tab" data-row="${i}" aria-pressed="${i===sel}" style="color:var(--ink)"><span>${t}</span></button>`).join("")}</div>`+
+  eq(blk("in · 4",mat([H1[sel]],{rows:[TOK[sel]]})),op("×W₁→"),blk("expanded · 8 · before ReLU",mat([PRE[sel]],{rows:["pre"]})))+
+  eq(blk("after ReLU · negatives → 0",mat([POST[sel]],{rows:["post"],zero:1,zeroM:[PRE[sel]]})),op("×W₂→"),blk("out · 4 (+ residual)",mat([H2[sel]],{rows:[TOK[sel]]})))+
+  `<div class="relu" style="display:flex;gap:14px;align-items:center"><svg viewBox="0 0 120 80" aria-label="ReLU graph"><line class="axis" x1="10" y1="60" x2="110" y2="60"/><line class="axis" x1="60" y1="8" x2="60" y2="72"/><polyline class="curve" points="10,60 60,60 105,15"/><text class="svgt" x="12" y="74">x&lt;0 → 0</text><text class="svgt" x="70" y="30">x</text></svg><span class="hint">ReLU: max(0, x). Crossed-out cells above were negative and got zeroed. That kink is the nonlinearity.</span></div>`,
+ body:()=>`<p>Now each token's vector goes through a small network on its own, with no mixing between tokens: expand, bend, shrink.</p><p>Here 4 expands to 8. In the 140B example, 12,288 expands to 43,008. That expansion is why the feed-forward holds about 72% of all parameters.</p><p>The nonlinearity zeroes negatives. Without it, every layer would be a plain matrix multiply, and 64 of them would collapse into one.</p><p class="note">${POST[sel].filter(x=>x===0).length} of 8 hidden units were switched off for “${TOK[sel]}”. Different inputs switch off different units, which is how the network stores many different patterns.</p>`},
+
+{t:"× 64 layers",viz:()=>{let h=`<div class="stack">`;[1,2,3].forEach(l=>h+=`<div class="lyr"><span>L${l}</span><span class="a">attention</span><span class="b">feed-forward</span></div>`);h+=`<div class="lyr gap">⋮ 59 more ⋮</div>`;[63,64].forEach(l=>h+=`<div class="lyr ${l===64?"on":""}"><span>L${l}</span><span class="a">attention</span><span class="b">feed-forward</span></div>`);return h+`</div><p class="hint">Read bottom to top. Each layer has its own W_Q, W_K, W_V, W_O and feed-forward weights.</p>`+eq(blk("after this layer · still 3 × 4",mat(H2,{rows:TOK})))},
+ body:`<p>Attention followed by feed-forward is one layer. The model stacks this, 64 times in the 140B example.</p><p>The shape never changes. Three tokens go in as 3 × d and come out as 3 × d. What changes is how much context each vector carries: deeper layers build more abstract meaning on top of what earlier layers found.</p><p class="note">Nothing is shared between layers. Layer 1's W_Q and layer 40's W_Q are entirely separate matrices.</p>`},
+
+{t:"Last position",viz:()=>eq(blk("final vectors",mat(H2,{rows:TOK,dim:[0,1],sel:2})),`<div class="mblock" style="gap:3px;padding-top:22px">${["predicts “am” (already known)","predicts “Nipun” (already known)","<b>predicts the next token</b>"].map(s=>`<span class="hint" style="height:33px;display:flex;align-items:center">→ ${s}</span>`).join("")}</div>`),
+ body:`<p>After the final layer you still have three vectors. Each position was trained to predict the token right after it.</p><p>You already know what follows “I” and what follows “am”, so those two are ignored. Only the last row is new information.</p><p class="note">The last vector isn't just about “Nipun”. Through attention in every layer it has absorbed the whole sentence, viewed from the final position.</p>`},
+
+{t:"Vocabulary",viz:()=>{const p=sm(LOG.map(x=>x/temp));return eq(blk("last vector · 1 × 4",mat([H2[2]],{rows:["Nipun"]})),op("×"),blk("<b>W_out</b> · 4 × vocab",mat(WOUT,{rows:["d1","d2","d3","d4"],cols:VOC})))+
+  `<div class="mblock"><span class="mname">softmax(logits ÷ temperature) · probability per token</span>${bars(p,VOC)}</div>
+  <div class="calc"><label for="temp">Temperature <b class="mono" id="tv">${temp.toFixed(1)}</b></label><input id="temp" type="range" min="0.2" max="2.5" step="0.1" value="${temp}"></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="btn solid" id="greedy">Greedy pick</button><button class="btn" id="sample">Sample</button>${pick?`<span>Next token: <span class="tok" style="font-size:.9rem;padding:3px 9px">${pick}</span></span>`:""}</div>`},
+ body:`<p>Multiply the last vector by the output matrix. It has one column per vocabulary entry, so you get one score (a logit) for every possible token. With a 50,000-word vocabulary that's 50,000 scores.</p><p>Softmax turns scores into probabilities. Greedy takes the top one; sampling draws at random, weighted by probability.</p><p>Lower temperature sharpens the distribution toward the top choice. Higher temperature flattens it.</p><p class="note">The chosen token is appended to the input and the whole pass runs again. Part 2 below shows why that second pass is cheap.</p>`}
+];
+
+const rail=document.getElementById("rail"),viz=document.getElementById("viz");
+let cur=0;
+rail.innerHTML=STAGES.map((s,i)=>`<button class="st" role="tab" data-i="${i}"><span class="n">${String(i+1).padStart(2,"0")}</span><span class="t">${s.t}</span></button>`).join("");
+function render(){
+  const s=STAGES[cur];
+  rail.querySelectorAll(".st").forEach((b,i)=>b.setAttribute("aria-current",i===cur));
+  viz.innerHTML=s.viz();
+  document.getElementById("stEye").textContent=`Stage ${cur+1} of ${STAGES.length}`;
+  document.getElementById("stTitle").textContent=s.t;
+  document.getElementById("stBody").innerHTML=typeof s.body==="function"?s.body():s.body;
+  document.getElementById("prev").disabled=cur===0;
+  document.getElementById("next").disabled=cur===STAGES.length-1;
+  const tr=document.getElementById("temp");
+  if(tr)tr.oninput=e=>{temp=+e.target.value;pick=null;render()};
+  const g=document.getElementById("greedy");
+  if(g){g.onclick=()=>{const p=sm(LOG.map(x=>x/temp));pick=VOC[p.indexOf(Math.max(...p))];render()};
+    document.getElementById("sample").onclick=()=>{const p=sm(LOG.map(x=>x/temp));let r=Math.random(),i=0;while(i<p.length-1&&(r-=p[i])>0)i++;pick=VOC[i];render()}}
+}
+rail.addEventListener("click",e=>{const b=e.target.closest(".st");if(b){cur=+b.dataset.i;render()}});
+document.getElementById("prev").onclick=()=>{if(cur>0){cur--;render()}};
+document.getElementById("next").onclick=()=>{if(cur<STAGES.length-1){cur++;render()}};
+viz.addEventListener("click",e=>{
+  const q=e.target.closest("[data-qkv]");if(q){qkv=q.dataset.qkv;render();return}
+  const r=e.target.closest("[data-row]");if(r){sel=+r.dataset.row;render()}});
+viz.addEventListener("keydown",e=>{if(e.key==="Enter"){const r=e.target.closest("tr[data-row]");if(r){sel=+r.dataset.row;render()}}});
+render();
+
+/* ---------- KV cache ---------- */
+const MORE=["and","I","like","to","learn","."];
+const LAYERS=4, MB_PER_TOK=3.145728;
+document.getElementById("wgrid").innerHTML=[1,2,3,4].map(l=>`<div class="wrow"><span class="lb">L${l}</span><span class="wq">W_Q</span><span class="wk">W_K</span><span class="wv">W_V</span><span class="wo">W_O</span><span class="wf">FFN</span></div>`).join("")+`<div class="wrow"><span class="lb" style="grid-column:1/-1;text-align:center">⋮ L5 – L64</span></div>`;
+let seq, step;
+function kvReset(){seq=TOK.slice();step=0;kvRender(3,"Prefill: the prompt “I am Nipun” runs through all layers at once. Every token's key and value go into the cache. Queries are used and dropped.")}
+function kvRender(nNew,msg){
+  document.getElementById("seq").innerHTML=seq.map((t,i)=>`<span class="tok ${i>=seq.length-nNew?"new":""}">${t}</span>`).join("");
+  const qname=nNew===1?`q “${seq[seq.length-1]}”`:"q × 3";
+  document.getElementById("cache").innerHTML=Array.from({length:LAYERS},(_,l)=>`<div class="crow"><span class="lb">L${l+1}</span><span class="qchip" data-q>${qname}</span><div class="strips">
+    <div class="strip">${seq.map((t,i)=>`<span class="cell kc ${i>=seq.length-nNew?"new":""}" title="key for ${t}">K</span>`).join("")}</div>
+    <div class="strip">${seq.map((t,i)=>`<span class="cell vc ${i>=seq.length-nNew?"new":""}" title="value for ${t}">V</span>`).join("")}</div></div></div>`).join("");
+  document.getElementById("log").innerHTML=msg;
+  document.getElementById("sTok").textContent=seq.length;
+  document.getElementById("sNew").textContent=nNew;
+  document.getElementById("sMB").textContent=(seq.length*MB_PER_TOK).toFixed(1)+" MB";
+  document.getElementById("gen").disabled=step>=MORE.length;
+  setTimeout(()=>document.querySelectorAll("[data-q]").forEach(c=>{c.classList.add("gone");c.textContent=c.textContent+" · dropped"}),900);
+}
+document.getElementById("gen").onclick=()=>{
+  if(step>=MORE.length)return;
+  const prev=seq[seq.length-1];const t=MORE[step++];
+  seq.push(t);
+  kvRender(1,`Last vector for “${prev}” → vocabulary → picked <b>“${t}”</b>. Now only “${t}” runs through the layers. In each layer its query reads all ${seq.length} cached keys, then its own K and V are appended. ${step===MORE.length?"Sequence done.":""}`);
+};
+document.getElementById("kvreset").onclick=kvReset;
+kvReset();
+
+/* ---------- memory ---------- */
+const parts=[["W_Q",19.3,"--q"],["W_K",19.3,"--k"],["W_V",19.3,"--v"],["W_O",19.3,"--muted"],["Feed-forward 203 GB",203,"--ffn"]];
+document.getElementById("sbar").innerHTML=parts.map(([n,g,c])=>`<div style="width:${g/280*100}%;background:var(${c})" title="${n}: ${g} GB">${g>50?n:""}</div>`).join("");
+const CTX=[1024,2048,4096,8192,16384,32768,65536,131072];
+function calc(){
+  const n=CTX[+document.getElementById("ctx").value];const gqa=document.getElementById("gqa").checked;
+  const gb=n*MB_PER_TOK/(gqa?12:1)/1000;
+  document.getElementById("ctxV").textContent=n.toLocaleString();
+  const mx=Math.max(280,gb);
+  document.getElementById("cmp").innerHTML=[["Weights",280,"--ink"],["KV cache",gb,"--k"]].map(([l,v,c])=>`<div class="bar"><span>${l}</span><div class="track"><div class="fill" style="width:${v/mx*100}%;background:var(${c})"></div></div><span class="val">${v<10?v.toFixed(1):Math.round(v)} GB</span></div>`).join("");
+  document.getElementById("cmpNote").textContent=gb>280?`At this length, one conversation's cache is bigger than the model itself. This is why long context is expensive, and why most large models use grouped-query attention.`:gqa?`Sharing key/value heads cuts the cache 12×: each token stores ${(MB_PER_TOK/12*1000).toFixed(0)} KB instead of ${MB_PER_TOK.toFixed(2)} MB.`:`That's for a single sequence. Serving 32 users at once multiplies it by 32.`;
+}
+document.getElementById("ctx").oninput=calc;document.getElementById("gqa").onchange=calc;calc();
+})();
+</script>
+
+</body>
+</html>
