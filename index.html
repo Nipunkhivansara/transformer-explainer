@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="An interactive, step-by-step look at how a language model decides which word comes next.">
 <title>Inside the Forward Pass</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -197,7 +198,7 @@ footer{font-size:.82rem;color:var(--muted)}
 <header>
   <span class="eyebrow">How a transformer picks the next token</span>
   <h1>Inside the Forward Pass</h1>
-  <p class="lede">Follow three tokens through one layer of a transformer, out to a probability for every word, and back in again. Every number on this page is computed live from small toy weights, so the matrices stay consistent with each other.</p>
+  <p class="lede">Ever wondered how ChatGPT or Claude decides which word comes next? Follow the sentence “I am Nipun” step by step: how each word looks at the words before it, how the model scores every possible next word, and how it picks one. Every number here is computed live, so click any stage and watch it work.</p>
   <div class="sentence" aria-label="Example input">
     <span class="tok">I</span><span class="tok">am</span><span class="tok">Nipun</span><span class="tok ghost">?</span>
   </div>
