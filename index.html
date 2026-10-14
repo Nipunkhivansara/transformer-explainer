@@ -98,6 +98,12 @@ table.m td.zero{text-decoration:line-through;color:var(--muted)}
 .qkvrow{display:flex;flex-direction:column;gap:8px;padding:12px 12px 12px 14px;border-left:4px solid var(--role);border-radius:4px;background:var(--surface);cursor:pointer;opacity:.5;transition:opacity .25s,background .25s}
 .qkvrow.on{opacity:1;background:color-mix(in oklab,var(--role) 7%,var(--surface))}
 .qkvrow:hover{opacity:.85}.qkvrow.on:hover{opacity:1}
+.role{display:block;font-family:var(--f-mono);font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:var(--ink);font-weight:600;margin-bottom:2px}
+.mname{line-height:1.4}
+table.m td.hr,table.m td.hc{outline:2px solid var(--hl);outline-offset:-2px}
+table.m td.hx{outline:3px solid var(--hl);outline-offset:-3px;font-weight:600}
+table.m td.cc{cursor:pointer}
+table.m td.cc:hover{outline:1.5px dashed var(--hl);outline-offset:-2px}
 .qkvhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .eq-row.wrapok{flex-wrap:wrap;min-width:0}
 @media (max-width:560px){table.m td{width:40px;height:26px;font-size:.68rem}table.m{border-spacing:2px}}
@@ -379,14 +385,15 @@ function mat(M,o={}){
     r.forEach((x,j)=>{
       if(!isFinite(x)){h+=`<td class="mask">—</td>`;return}
       const z=o.zero&&o.zeroM&&o.zeroM[i][j]<=0;
-      h+=`<td class="${z?"zero":""}" style="${z?"":bg(x,max,o.tint)}">${o.pct?(x*100).toFixed(0)+"%":f2(o.zeroM&&z?o.zeroM[i][j]:x)}</td>`});
+      const hc=[z?"zero":"",o.selCol===j?"hc":"",o.selRow===i?"hr":"",o.selCell&&o.selCell[0]===i&&o.selCell[1]===j?"hx":"",o.cellClick?"cc":""].join(" ");
+      h+=`<td class="${hc}" ${o.cellClick?`data-cell="${i},${j}" data-qk="${o.cellClick}" tabindex="0"`:""} style="${z?"":bg(x,max,o.tint)}">${o.pct?(x*100).toFixed(0)+"%":f2(o.zeroM&&z?o.zeroM[i][j]:x)}</td>`});
     h+="</tr>"});
   return h+"</tbody></table>"}
 const blk=(name,html)=>`<div class="mblock"><span class="mname">${name}</span>${html}</div>`;
 const eq=(...p)=>`<div class="eq"><div class="eq-row">${p.join("")}</div></div>`;
 const op=s=>`<span class="op">${s}</span>`;
 
-let sel=2, qkv="Q", temp=1, pick=null;
+let sel=2, qkv="Q", qcell=[0,0], temp=1, pick=null;
 const ROLE={Q:["--q","Query",WQ,Q],K:["--k","Key",WK,K],V:["--v","Value",WV,V]};
 
 function bars(probs,labels){
@@ -404,12 +411,19 @@ const STAGES=[
 
 {t:"Q, K, V",viz:()=>{const DESC={Q:"what each token is looking for",K:"what each token offers, so others can find it",V:"the content each token hands over when chosen"};
   return`<div class="tabs">${["Q","K","V"].map(k=>`<button class="tab" data-qkv="${k}" aria-pressed="${k===qkv}" style="color:var(${ROLE[k][0]})"><span>${ROLE[k][1]}</span></button>`).join("")}</div>`+
-  eq(blk("<b>X</b> · 3 × 4 · the same input feeds all three",mat(X,{rows:TOK})))+
-  ["Q","K","V"].map(k=>{const[c,n,W,R]=ROLE[k];const on=k===qkv;return`<div class="qkvrow ${on?"on":""}" data-qkv="${k}" style="--role:var(${c})"><div class="qkvhead"><b style="color:var(${c})">${n}</b><span class="hint">${DESC[k]}</span></div>
-   <div class="eq"><div class="eq-row wrapok">${op("X ×")}${blk(`<b style="color:var(${c})">W_${k}</b> · 4 × 4 · learned, fixed`,mat(W,{rows:["d1","d2","d3","d4"],tint:c}))}${op("=")}${blk(`<b style="color:var(${c})">${k}</b> · 3 × 4`,mat(R,{rows:TOK,tint:c}))}</div></div></div>`}).join("")},
- body:()=>`<p>Each layer has three learned matrices. Multiply <b>X</b> by each one and you get three new matrices from the same input.</p>
+  ["Q","K","V"].map(k=>{const[c,n,W,R]=ROLE[k];const on=k===qkv;const[ci,cj]=qcell;
+   if(!on)return`<div class="qkvrow" data-qkv="${k}" style="--role:var(${c})"><div class="qkvhead"><b style="color:var(${c})">${n}</b><span class="hint">${DESC[k]}</span><span class="hint" style="margin-left:auto">Tap to show →</span></div></div>`;
+   const terms=X[ci].map((x,m)=>`${f2(x)}×${f2(W[m][cj])}`).join(" + ");
+   return`<div class="qkvrow on" data-qkv="${k}" style="--role:var(${c})"><div class="qkvhead"><b style="color:var(${c})">${n}</b><span class="hint">${DESC[k]}</span></div>
+   <div class="eq"><div class="eq-row wrapok">
+    ${blk(`<span class="role">① Input</span><b>X</b> · 3 words × 4 numbers<br>from stage 2`,mat(X,{rows:TOK,selRow:ci}))}${op("×")}
+    ${blk(`<span class="role">② Weights</span><b style="color:var(${c})">W_${k}</b> · 4 × 4<br>learned in training, never changes`,mat(W,{rows:["d1","d2","d3","d4"],tint:c,selCol:cj}))}${op("=")}
+    ${blk(`<span class="role">③ Result</span><b style="color:var(${c})">${k}</b> · 3 words × 4 numbers<br>tap any number`,mat(R,{rows:TOK,tint:c,cellClick:k,selCell:[ci,cj]}))}
+   </div></div>
+   <div class="callout" style="font-size:.86rem"><b style="color:var(${c})">${k}</b>[${TOK[ci]}, d${cj+1}] = row “${TOK[ci]}” of X, times column d${cj+1} of W_${k}, added up:<div class="mono" style="font-size:.78rem;margin-top:4px;overflow-wrap:anywhere">${terms} = <b>${f2(R[ci][cj])}</b></div></div></div>`}).join("")},
+ body:()=>`<p>Three matrices are in play:</p><p><b>① X, the input.</b> One row per word, from stage 2.<br><b>② W, the weights.</b> Learned during training and fixed afterwards. There are three: W_Q, W_K and W_V.<br><b>③ Q, K or V, the result.</b> What you get from X × W.</p><p>Each number in the result is one row of X (a word) multiplied, number by number, with one column of W, then added up. Tap any number in the result to see the calculation.</p>
  <p><b class="q">Query</b>: what this token is looking for.<br><b class="k">Key</b>: what this token offers, so others can find it.<br><b class="v">Value</b>: the content it hands over when it's chosen.</p>
- <p>Tap a row or a tab to highlight it. Now showing <b style="color:var(${ROLE[qkv][0]})">${ROLE[qkv][1]}</b>: compare its numbers with the other two. Same <b>X</b>, completely different results, because each W is different.</p>
+ <p>Switch between Query, Key and Value: the input X stays the same, but the weights change, so the result changes.</p>
  <p class="note">The W matrices are weights: learned in training, frozen at inference, and different in every layer. Q, K and V themselves are fresh for every input.</p>`},
 
 {t:"Scores",viz:()=>eq(blk("<b class='q'>Q</b>",mat(Q,{rows:TOK})),op("×"),blk("<b class='k'>K</b>ᵀ",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · click a row",mat(S,{rows:TOK,cols:TOK,click:1,sel})))+`<p class="hint">Hatched cells are masked: a token can't look at words that come after it.</p>`,
@@ -467,9 +481,10 @@ rail.addEventListener("click",e=>{const b=e.target.closest(".st");if(b){cur=+b.d
 document.getElementById("prev").onclick=()=>{if(cur>0){cur--;render()}};
 document.getElementById("next").onclick=()=>{if(cur<STAGES.length-1){cur++;render()}};
 viz.addEventListener("click",e=>{
+  const cc=e.target.closest("[data-cell]");if(cc){qkv=cc.dataset.qk;qcell=cc.dataset.cell.split(",").map(Number);render();return}
   const q=e.target.closest("[data-qkv]");if(q){qkv=q.dataset.qkv;render();return}
   const r=e.target.closest("[data-row]");if(r){sel=+r.dataset.row;render()}});
-viz.addEventListener("keydown",e=>{if(e.key==="Enter"){const r=e.target.closest("tr[data-row]");if(r){sel=+r.dataset.row;render()}}});
+viz.addEventListener("keydown",e=>{if(e.key==="Enter"){const cc=e.target.closest("[data-cell]");if(cc){qkv=cc.dataset.qk;qcell=cc.dataset.cell.split(",").map(Number);render();return}const r=e.target.closest("tr[data-row]");if(r){sel=+r.dataset.row;render()}}});
 render();
 
 /* ---------- KV cache ---------- */
