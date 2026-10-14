@@ -320,7 +320,7 @@ footer{font-size:.82rem;color:var(--muted)}
     </details>
     <details>
       <summary>What does the attention output actually mean, after W_O and the residual?</summary>
-      <div class="ans"><p>It's the same token, updated with context. Z is a blend of the value vectors of the tokens it attended to. W_O maps that blend back into the model's main vector space. Adding the original X back (the residual) means attention adds information rather than replacing the token. After the step, each row means “this token, in the light of what came before it.” <span class="see">Stage 6, step ④.</span></p></div>
+      <div class="ans"><p>It's the same token, updated with context. Z is a blend of the value vectors of the tokens it attended to. W_O maps that blend back into the model's main vector space. Adding the original X back (the residual) means attention adds information rather than replacing the token. After the step, each row means “this token, in the light of what came before it.” <span class="see">Stage 6, steps ④ and ⑤.</span></p></div>
     </details>
     <details>
       <summary>Where does the feed-forward fit, and why does it need a nonlinearity?</summary>
@@ -392,8 +392,10 @@ function mat(M,o={}){
 const blk=(name,html)=>`<div class="mblock"><span class="mname">${name}</span>${html}</div>`;
 const eq=(...p)=>`<div class="eq"><div class="eq-row">${p.join("")}</div></div>`;
 const op=s=>`<span class="op">${s}</span>`;
+const eqw=(...p)=>`<div class="eq"><div class="eq-row wrapok">${p.join("")}</div></div>`;
 
-let sel=2, qkv="Q", qcell=[0,0], temp=1, pick=null;
+let sel=2, qkv="Q", qcell=[0,0], wo=[2,1], temp=1, pick=null;
+function pickCell(cc){const p=cc.dataset.cell.split(",").map(Number);if(cc.dataset.qk==="O")wo=p;else{qkv=cc.dataset.qk;qcell=p}}
 const ROLE={Q:["--q","Query",WQ,Q],K:["--k","Key",WK,K],V:["--v","Value",WV,V]};
 
 function bars(probs,labels){
@@ -424,7 +426,7 @@ const STAGES=[
  body:()=>`<p>Three matrices are in play:</p><p><b>① X, the input.</b> One row per word, from stage 2.<br><b>② W, the weights.</b> Learned during training and fixed afterwards. There are three: W_Q, W_K and W_V.<br><b>③ Q, K or V, the result.</b> What you get from X × W.</p><p>Each number in the result is one row of X (a word) multiplied, number by number, with one column of W, then added up. Tap any number in the result to see the calculation.</p>
  <p><b class="q">Query</b>: what this token is looking for.<br><b class="k">Key</b>: what this token offers, so others can find it.<br><b class="v">Value</b>: the content it hands over when it's chosen.</p>
  <p>Switch between Query, Key and Value: the input X stays the same, but the weights change, so the result changes.</p>
- <p class="note">The W matrices are weights: learned in training, frozen at inference, and different in every layer. Q, K and V themselves are fresh for every input.</p>`},
+ <p class="note">The W matrices are weights: learned in training, frozen at inference, and different in every layer. Q, K and V themselves are fresh for every input. Each layer also has a fourth attention matrix, <b>W_O</b>, used after attention has mixed the values. It appears in stage 6.</p>`},
 
 {t:"Scores",viz:()=>eq(blk("<b class='q'>Q</b>",mat(Q,{rows:TOK})),op("×"),blk("<b class='k'>K</b>ᵀ",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · click a row",mat(S,{rows:TOK,cols:TOK,click:1,sel})))+`<p class="hint">Hatched cells are masked: a token can't look at words that come after it.</p>`,
  body:()=>`<p>Every query is compared with every key using a dot product, then divided by √d to keep numbers stable. A high score means “this key matches what I'm looking for.”</p><p>Row <b>${TOK[sel]}</b> holds the scores for <b>${TOK[sel]}</b>'s query against the keys it's allowed to see.</p><p class="note">The causal mask is why “I” can only attend to itself. During training this is what lets every position learn to predict the next token without peeking.</p>`},
@@ -433,12 +435,14 @@ const STAGES=[
  body:()=>`<p>Softmax turns each row of scores into percentages. The result is <b>the attention matrix</b>, 3 × 3, one row per query and one column per key. These are the attention weights: how much each token will borrow from each earlier token.</p><p><b>${TOK[sel]}</b> splits its attention ${TOK.slice(0,sel+1).map((t,j)=>`${(A[sel][j]*100).toFixed(0)}% to “${t}”`).join(", ")}.</p><p class="hint">Click a row to switch tokens.</p>`},
 
 {t:"Attention × V",viz:()=>{const w=A[sel];const lab=s=>`<span class="eyebrow" style="font-size:.68rem">${s}</span>`;return `<div class="callout mono" style="font-size:.85rem;overflow-x:auto;white-space:nowrap">Attention(Q,K,V) = softmax( <span class="q">Q</span>·<span class="k">K</span>ᵀ / √d ) · <span class="v">V</span></div>`+
-  lab("① Query × every key")+eq(blk("<b class='q'>Q</b> · 3 × 4",mat(Q,{rows:TOK,sel})),op("×"),blk("<b class='k'>K</b>ᵀ · 4 × 3",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · 3 × 3",mat(S,{rows:TOK,cols:TOK,sel})))+
-  lab("② Softmax each row")+eq(blk("scores",mat(S,{rows:TOK,cols:TOK,sel})),op("softmax →"),blk("<b>A</b> attention matrix · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,sel,max:1})))+
-  lab("③ Attention matrix × value matrix · click a row")+eq(blk("<b>A</b> · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,click:1,sel,max:1})),op("×"),blk("<b class='v'>V</b> · 3 × 4",mat(V,{rows:TOK})),op("="),blk("<b>Z</b> output · 3 × 4",mat(Z,{rows:TOK,click:1,sel})))+
+  lab("① Query × every key")+eqw(blk("<b class='q'>Q</b> · 3 × 4",mat(Q,{rows:TOK,sel})),op("×"),blk("<b class='k'>K</b>ᵀ · 4 × 3",mat(T(K),{rows:["d1","d2","d3","d4"],cols:TOK})),op("÷ √4 ="),blk("scores · 3 × 3",mat(S,{rows:TOK,cols:TOK,sel})))+
+  lab("② Softmax each row")+eqw(blk("scores",mat(S,{rows:TOK,cols:TOK,sel})),op("softmax →"),blk("<b>A</b> attention matrix · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,sel,max:1})))+
+  lab("③ Attention matrix × value matrix · click a row")+eqw(blk("<b>A</b> · 3 × 3",mat(A,{rows:TOK,cols:TOK,pct:1,click:1,sel,max:1})),op("×"),blk("<b class='v'>V</b> · 3 × 4",mat(V,{rows:TOK})),op("="),blk("<b>Z</b> output · 3 × 4",mat(Z,{rows:TOK,click:1,sel})))+
   `<div class="callout mono" style="font-size:.8rem;overflow-x:auto">Z<sub>${TOK[sel]}</sub> = ${TOK.slice(0,sel+1).map((t,j)=>`${w[j].toFixed(2)}·V<sub>${t}</sub>`).join(" + ")} = [${Z[sel].map(f2).join(", ")}]</div>`+
-  lab("④ Then W_O, plus the input (residual)")+eq(blk("<b>Z</b>",mat(Z,{rows:TOK,sel})),op("× W_O + X ="),blk("layer output so far · 3 × 4",mat(H1,{rows:TOK,sel})))},
- body:()=>`<p>This is the whole attention operation in one view, as three matrix multiplies.</p><p><b>①</b> The query matrix times the transposed key matrix compares every query with every key, giving a 3 × 3 grid of scores.</p><p><b>②</b> Softmax turns each row into weights. That 3 × 3 grid is the attention matrix.</p><p><b>③</b> The attention matrix times the value matrix gives the output. Row <b>${TOK[sel]}</b> of the result is that row's weights applied to every value vector and summed, so it now carries pieces of ${sel?TOK.slice(0,sel+1).map(t=>"“"+t+"”").join(", "):"only itself"}.</p><p class="note"><b>④</b> One more matrix, <b>W_O</b>, maps the result back, and it's added to the original <b>X</b>. That addition is the residual connection; it lets each layer refine rather than replace.</p>`},
+  lab("④ Output matrix W_O · tap any number in the result")+eqw(blk(`<span class="role">Input</span><b>Z</b> · 3 × 4<br>from step ③`,mat(Z,{rows:TOK,selRow:wo[0]})),op("×"),blk(`<span class="role">Weights</span><b>W_O</b> · 4 × 4<br>learned in training, never changes`,mat(WO,{rows:["d1","d2","d3","d4"],selCol:wo[1]})),op("="),blk(`<span class="role">Result</span>attention output · 3 × 4<br>&nbsp;`,mat(AO,{rows:TOK,cellClick:"O",selCell:wo})))+
+  `<div class="callout" style="font-size:.86rem">attention output[${TOK[wo[0]]}, d${wo[1]+1}] = row “${TOK[wo[0]]}” of Z, times column d${wo[1]+1} of W_O, added up:<div class="mono" style="font-size:.78rem;margin-top:4px;overflow-wrap:anywhere">${Z[wo[0]].map((z,m)=>`${f2(z)}×${f2(WO[m][wo[1]])}`).join(" + ")} = <b>${f2(AO[wo[0]][wo[1]])}</b></div></div>`+
+  lab("⑤ Add the original input back (residual)")+eqw(blk("attention output",mat(AO,{rows:TOK,sel})),op("+"),blk("<b>X</b> · original input",mat(X,{rows:TOK,sel})),op("="),blk("updated vectors · 3 × 4",mat(H1,{rows:TOK,sel})))},
+ body:()=>`<p>This is the whole attention operation in one view, as three matrix multiplies.</p><p><b>①</b> The query matrix times the transposed key matrix compares every query with every key, giving a 3 × 3 grid of scores.</p><p><b>②</b> Softmax turns each row into weights. That 3 × 3 grid is the attention matrix.</p><p><b>③</b> The attention matrix times the value matrix gives the output. Row <b>${TOK[sel]}</b> of the result is that row's weights applied to every value vector and summed, so it now carries pieces of ${sel?TOK.slice(0,sel+1).map(t=>"“"+t+"”").join(", "):"only itself"}.</p><p><b>④</b> Z is built from value vectors, so it lives in the value space. <b>W_O</b>, the fourth attention matrix, maps it back into the model's main space so it can be combined with X. In real models with many attention heads, W_O is also what blends all the heads' outputs into one vector.</p><p class="note"><b>⑤</b> The attention output is added to the original <b>X</b>. This is the residual connection: attention adds an update to each word instead of replacing it, so the original meaning is never lost.</p>`},
 
 {t:"Feed-forward",viz:()=>`<div class="tabs">${TOK.map((t,i)=>`<button class="tab" data-row="${i}" aria-pressed="${i===sel}" style="color:var(--ink)"><span>${t}</span></button>`).join("")}</div>`+
   eq(blk("in · 4",mat([H1[sel]],{rows:[TOK[sel]]})),op("×W₁→"),blk("expanded · 8 · before ReLU",mat([PRE[sel]],{rows:["pre"]})))+
@@ -481,10 +485,10 @@ rail.addEventListener("click",e=>{const b=e.target.closest(".st");if(b){cur=+b.d
 document.getElementById("prev").onclick=()=>{if(cur>0){cur--;render()}};
 document.getElementById("next").onclick=()=>{if(cur<STAGES.length-1){cur++;render()}};
 viz.addEventListener("click",e=>{
-  const cc=e.target.closest("[data-cell]");if(cc){qkv=cc.dataset.qk;qcell=cc.dataset.cell.split(",").map(Number);render();return}
+  const cc=e.target.closest("[data-cell]");if(cc){pickCell(cc);render();return}
   const q=e.target.closest("[data-qkv]");if(q){qkv=q.dataset.qkv;render();return}
   const r=e.target.closest("[data-row]");if(r){sel=+r.dataset.row;render()}});
-viz.addEventListener("keydown",e=>{if(e.key==="Enter"){const cc=e.target.closest("[data-cell]");if(cc){qkv=cc.dataset.qk;qcell=cc.dataset.cell.split(",").map(Number);render();return}const r=e.target.closest("tr[data-row]");if(r){sel=+r.dataset.row;render()}}});
+viz.addEventListener("keydown",e=>{if(e.key==="Enter"){const cc=e.target.closest("[data-cell]");if(cc){pickCell(cc);render();return}const r=e.target.closest("tr[data-row]");if(r){sel=+r.dataset.row;render()}}});
 render();
 
 /* ---------- KV cache ---------- */
