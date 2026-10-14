@@ -132,7 +132,8 @@ table.m td.zero{text-decoration:line-through;color:var(--muted)}
 @media (max-width:860px){.kv{grid-template-columns:1fr}}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0}
 .wgrid{display:flex;flex-direction:column;gap:6px}
-.wrow{display:grid;grid-template-columns:52px repeat(4,1fr) 1.6fr;gap:4px;font-family:var(--f-mono);font-size:.7rem}
+.lgap{font-family:var(--f-mono);font-size:.72rem;color:var(--muted);padding:4px 0 4px 2px}
+.wrow{display:grid;grid-template-columns:62px repeat(4,1fr) 1.6fr;gap:4px;font-family:var(--f-mono);font-size:.7rem}
 .wrow span{padding:5px 0;text-align:center;border-radius:3px}
 .wrow .lb{text-align:left;color:var(--muted)}
 .wq{background:color-mix(in oklab,var(--q) 20%,var(--surface))}
@@ -145,10 +146,11 @@ table.m td.zero{text-decoration:line-through;color:var(--muted)}
 .seq .tok{font-size:.85rem;padding:4px 9px}
 .seq .tok.new{background:var(--ink);color:var(--surface)}
 .cache{display:flex;flex-direction:column;gap:12px;overflow-x:auto}
-.crow{display:grid;grid-template-columns:52px 64px minmax(0,1fr);gap:8px;align-items:center;min-width:0}
+.crow{display:grid;grid-template-columns:62px 78px minmax(0,1fr);gap:8px;align-items:center;min-width:0}
 .crow .lb{font-family:var(--f-mono);font-size:.72rem;color:var(--muted)}
 .qchip{font-family:var(--f-mono);font-size:.72rem;padding:3px 6px;border-radius:4px;background:color-mix(in oklab,var(--q) 22%,var(--surface));color:var(--q);text-align:center;transition:opacity .5s}
-.qchip.gone{opacity:.25;text-decoration:line-through}
+.qchip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qchip.gone{opacity:.3;text-decoration:line-through}
 .strips{display:flex;flex-direction:column;gap:3px;min-width:0}
 .strip{display:flex;gap:3px;flex-wrap:wrap}
 .cell{width:26px;height:16px;border-radius:2px;font-family:var(--f-mono);font-size:.6rem;display:flex;align-items:center;justify-content:center}
@@ -233,12 +235,13 @@ footer{font-size:.82rem;color:var(--muted)}
   <div class="kv">
     <div class="panel">
       <h3>Weights</h3>
-      <span class="lock">Loaded once at startup, read on every step. 4 of 64 layers shown.</span>
+      <span class="lock">The model has <b>64 layers</b>, and each has its own weights. Loaded once at startup, read on every step.</span>
       <div class="wgrid" id="wgrid"></div>
       <span class="lock">Same 280 GB whether the context is 3 tokens or 100,000.</span>
     </div>
     <div class="panel">
       <h3>KV cache</h3>
+      <span class="lock">Each of the <b>64 layers</b> keeps its own cache: one key (K) and one value (V) per token. Layers 1–3 and 64 are shown. The faded, crossed-out <span class="q">q</span> is the query: used once, then thrown away.</span>
       <div class="seq" id="seq"></div>
       <div class="cache" id="cache"></div>
       <div class="log callout" id="log"></div>
@@ -472,13 +475,14 @@ render();
 /* ---------- KV cache ---------- */
 const MORE=["and","I","like","to","learn","."];
 const LAYERS=4, MB_PER_TOK=3.145728;
-document.getElementById("wgrid").innerHTML=[1,2,3,4].map(l=>`<div class="wrow"><span class="lb">L${l}</span><span class="wq">W_Q</span><span class="wk">W_K</span><span class="wv">W_V</span><span class="wo">W_O</span><span class="wf">FFN</span></div>`).join("")+`<div class="wrow"><span class="lb" style="grid-column:1/-1;text-align:center">⋮ L5 – L64</span></div>`;
+const GAP=t=>`<div class="lgap">⋮ ${t}</div>`;
+document.getElementById("wgrid").innerHTML=[1,2,3,0,64].map(l=>!l?GAP("Layers 4 – 63, each with its own set"):`<div class="wrow"><span class="lb">Layer ${l}</span><span class="wq">W_Q</span><span class="wk">W_K</span><span class="wv">W_V</span><span class="wo">W_O</span><span class="wf">FFN</span></div>`).join("");
 let seq, step;
 function kvReset(){seq=TOK.slice();step=0;kvRender(3,"Prefill: the prompt “I am Nipun” runs through all layers at once. Every token's key and value go into the cache. Queries are used and dropped.")}
 function kvRender(nNew,msg){
   document.getElementById("seq").innerHTML=seq.map((t,i)=>`<span class="tok ${i>=seq.length-nNew?"new":""}">${t}</span>`).join("");
   const qname=nNew===1?`q “${seq[seq.length-1]}”`:"q × 3";
-  document.getElementById("cache").innerHTML=Array.from({length:LAYERS},(_,l)=>`<div class="crow"><span class="lb">L${l+1}</span><span class="qchip" data-q>${qname}</span><div class="strips">
+  document.getElementById("cache").innerHTML=[1,2,3,0,64].map(l=>!l?GAP("Layers 4 – 63 store their own K and V too"):`<div class="crow"><span class="lb">Layer ${l}</span><span class="qchip" data-q>${qname}</span><div class="strips">
     <div class="strip">${seq.map((t,i)=>`<span class="cell kc ${i>=seq.length-nNew?"new":""}" title="key for ${t}">K</span>`).join("")}</div>
     <div class="strip">${seq.map((t,i)=>`<span class="cell vc ${i>=seq.length-nNew?"new":""}" title="value for ${t}">V</span>`).join("")}</div></div></div>`).join("");
   document.getElementById("log").innerHTML=msg;
@@ -486,7 +490,7 @@ function kvRender(nNew,msg){
   document.getElementById("sNew").textContent=nNew;
   document.getElementById("sMB").textContent=(seq.length*MB_PER_TOK).toFixed(1)+" MB";
   document.getElementById("gen").disabled=step>=MORE.length;
-  setTimeout(()=>document.querySelectorAll("[data-q]").forEach(c=>{c.classList.add("gone");c.textContent=c.textContent+" · dropped"}),900);
+  clearTimeout(window.__qT);window.__qT=setTimeout(()=>document.querySelectorAll("[data-q]").forEach(c=>{c.classList.add("gone");c.title="Query used, then discarded"}),900);
 }
 document.getElementById("gen").onclick=()=>{
   if(step>=MORE.length)return;
