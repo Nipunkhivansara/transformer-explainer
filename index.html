@@ -178,6 +178,15 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 .chk{display:flex;gap:8px;align-items:center;font-size:.9rem}
 .compare{display:flex;flex-direction:column;gap:6px}
 footer{font-size:.82rem;color:var(--muted)}
+.faq{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.faq details{border-bottom:1px solid var(--line)}
+.faq summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:minmax(0,1fr) 24px;gap:12px;align-items:start;padding:16px 4px;font-family:var(--f-display);font-weight:600;font-size:1.05rem;line-height:1.35}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--f-mono);font-size:1.3rem;line-height:1;color:var(--muted);text-align:center;transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq summary:focus-visible{outline:2px solid var(--q);outline-offset:2px}
+.faq .ans{padding:0 4px 18px}
+.faq .see{font-family:var(--f-mono);font-size:.8rem;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -277,6 +286,48 @@ footer{font-size:.82rem;color:var(--muted)}
     <label class="chk" for="gqa"><input type="checkbox" id="gqa"> Grouped-query attention (96 query heads share 8 key/value heads)</label>
     <div class="compare" id="cmp"></div>
     <p class="hint" id="cmpNote"></p>
+  </div>
+</section>
+
+<section id="questions">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 4 · Questions</span>
+    <h2>The questions that make it click</h2>
+    <p>The points that usually stay fuzzy after reading the formula. Tap one to open it.</p>
+  </div>
+  <div class="faq">
+    <details>
+      <summary>Attention outputs one vector per token. So where does the next token actually come from?</summary>
+      <div class="ans"><p>Attention never picks a token. It only updates vectors: three tokens in, three vectors out. The next token comes at the very end, after all the layers. The last vector is multiplied by an output matrix with one column per vocabulary entry, giving a score for every possible token. Softmax turns those scores into probabilities, and one token is picked. <span class="see">Stages 9 and 10.</span></p></div>
+    </details>
+    <details>
+      <summary>Why is only the last position used for the prediction?</summary>
+      <div class="ans"><p>Every position is trained to predict the token right after it. “I” predicts “am”, “am” predicts “Nipun”. When generating, you already know those answers, so the only new prediction is from the last position. Thanks to attention, that last vector isn't just about “Nipun”: it has absorbed the whole sentence. <span class="see">Stage 9.</span></p></div>
+    </details>
+    <details>
+      <summary>Why don't the attention scores match the attention matrix?</summary>
+      <div class="ans"><p>The attention matrix is the scores after softmax, applied row by row: softmax(zᵢ) = e<sup>zᵢ</sup> ÷ Σ e<sup>zⱼ</sup>. The numbers change completely, but the ranking is kept. A higher score always gets a bigger share, and every row adds up to 100%. Only differences between scores matter, so 0.23 versus −0.13 becomes 59% versus 41%. <span class="see">Stages 4 and 5.</span></p></div>
+    </details>
+    <details>
+      <summary>What does the attention output actually mean, after W_O and the residual?</summary>
+      <div class="ans"><p>It's the same token, updated with context. Z is a blend of the value vectors of the tokens it attended to. W_O maps that blend back into the model's main vector space. Adding the original X back (the residual) means attention adds information rather than replacing the token. After the step, each row means “this token, in the light of what came before it.” <span class="see">Stage 6, step ④.</span></p></div>
+    </details>
+    <details>
+      <summary>Where does the feed-forward fit, and why does it need a nonlinearity?</summary>
+      <div class="ans"><p>Every layer is attention followed by a feed-forward network. Attention moves information between tokens; the feed-forward then processes each token on its own: expand, bend, shrink. The bend (ReLU, GELU or SwiGLU) matters because matrix multiplications chained together collapse into a single matrix multiplication. Without a nonlinearity, 64 layers would be no more expressive than one. <span class="see">Stage 7.</span></p></div>
+    </details>
+    <details>
+      <summary>Is W_Q shared across layers, while only K and V differ?</summary>
+      <div class="ans"><p>No. Every layer has its own W_Q, W_K, W_V, W_O and feed-forward weights. Nothing is shared. The real asymmetry is at runtime, between the vectors: each token's key and value are kept in the KV cache because every later token needs them, while a query is used once and thrown away. <span class="see">Part 2.</span></p></div>
+    </details>
+    <details>
+      <summary>Are the weights loaded every time a token is generated?</summary>
+      <div class="ans"><p>No. All the weights are loaded into GPU memory once, at startup, and stay there. Every step reads them again (which is why inference is often limited by memory bandwidth), but they never change. What grows is the KV cache, by one key and one value per layer for each new token. <span class="see">Part 2.</span></p></div>
+    </details>
+    <details>
+      <summary>In a 140B model, where do the parameters actually go?</summary>
+      <div class="ans"><p>Mostly into the feed-forward layers, about 72%. With a hidden size of 12,288 and 64 layers, W_Q, W_K, W_V and W_O each total about 19 GB in fp16, while the feed-forward totals about 203 GB. On top of that, the KV cache costs about 3 MB per token without grouped-query attention, so a 128k-token context needs more memory than the model itself. <span class="see">Part 3.</span></p></div>
+    </details>
   </div>
 </section>
 
