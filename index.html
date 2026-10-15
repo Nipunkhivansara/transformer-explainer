@@ -165,23 +165,23 @@ table.m td.cc:hover{outline:1.5px dashed var(--hl);outline-offset:-2px}
 .cell.vc{background:color-mix(in oklab,var(--v) 55%,var(--surface))}
 .cell.new{outline:2px solid var(--hl);animation:pop .45s ease}
 @keyframes pop{from{transform:scale(.3);opacity:0}to{transform:none;opacity:1}}
-/* Q·Kᵀ shape: prefill vs decode */
-.qk{display:grid;grid-template-columns:auto auto;gap:4px;justify-content:start;overflow-x:auto;padding:2px}
-.qk .corner{font-family:var(--f-mono);font-size:.68rem;color:var(--muted);display:flex;align-items:flex-end;justify-content:flex-end;padding:0 4px 4px 0}
-.qk .ktr,.qk .qcol{display:flex;gap:3px}
-.qk .qcol{flex-direction:column}
-.qk .grid{display:grid;gap:3px}
-.qk .h,.qk .g{width:26px;height:22px;border-radius:3px;font-family:var(--f-mono);font-size:.62rem;display:flex;align-items:center;justify-content:center;transition:opacity .3s}
-.qk .h.kh{background:color-mix(in oklab,var(--k) 45%,var(--surface))}
-.qk .h.qh{background:color-mix(in oklab,var(--q) 30%,var(--surface));color:var(--q)}
-.qk .h.qh.drop{background:none;border:1px dashed var(--line);color:var(--muted);text-decoration:line-through;opacity:.6}
-.qk .corner sup{font-size:.55rem;position:relative;top:-.5em;vertical-align:baseline}
-.qk .h sub,.qk .g sub{font-size:.5rem;line-height:1;position:relative;top:.15em}
-.qk .g.mask{background:repeating-linear-gradient(135deg,var(--sunk) 0 3px,transparent 3px 6px);opacity:.6}
-.qk .g.old{background:var(--sunk);opacity:.55}
-.qk .g.live{background:color-mix(in oklab,var(--q) 55%,var(--surface));outline:2px solid var(--hl);animation:pop .45s ease}
-.qklegend{display:flex;flex-wrap:wrap;gap:14px;font-size:.8rem;color:var(--muted)}
-.qklegend i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-2px}
+/* Prefill vs decode, as two plain equations */
+.pd{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:860px){.pd{grid-template-columns:1fr}}
+.pdcard{border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.pdcard h4{margin:0;font-family:var(--f-display);font-size:1rem}
+.eq{display:flex;flex-wrap:wrap;align-items:center;gap:10px 8px}
+.eq .op{font-family:var(--f-mono);font-size:1.1rem;color:var(--muted)}
+.mat{display:flex;flex-direction:column;gap:4px;align-items:center}
+.mat .nm{font-family:var(--f-mono);font-size:.72rem;color:var(--muted)}
+.mat .dim{font-family:var(--f-mono);font-size:.66rem;color:var(--muted)}
+.mat .body{display:grid;gap:3px}
+.mc{min-width:44px;height:24px;padding:0 5px;border-radius:3px;font-family:var(--f-mono);font-size:.68rem;display:flex;align-items:center;justify-content:center;white-space:nowrap}
+.mc.q{background:color-mix(in oklab,var(--q) 22%,var(--surface));color:var(--q)}
+.mc.k{background:color-mix(in oklab,var(--k) 30%,var(--surface));color:var(--ink)}
+.mc.k.new{outline:2px solid var(--hl)}
+.mc.s{background:color-mix(in oklab,var(--q) 50%,var(--surface));color:var(--ink);min-width:26px}
+.mc.x{background:repeating-linear-gradient(135deg,var(--sunk) 0 3px,transparent 3px 6px);color:var(--muted);min-width:26px}
 .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 @media (max-width:560px){.stats{grid-template-columns:1fr}}
 .stat{border-top:2px solid var(--ink);padding-top:8px;display:flex;flex-direction:column;gap:2px}
@@ -281,15 +281,20 @@ footer{font-size:.82rem;color:var(--muted)}
     </div>
   </div>
   <div class="panel">
-    <h3>Prefill vs. decode: the shape of Q · K<sup>T</sup></h3>
-    <span class="lock">This follows the generator above. Rows are queries, columns are cached keys, each square is one dot product. Hatched squares are masked (a token can't look ahead).</span>
-    <div class="qk" id="qk"></div>
-    <div class="qklegend">
-      <span><i style="background:color-mix(in oklab,var(--q) 55%,var(--surface));outline:2px solid var(--hl)"></i>computed this step</span>
-      <span><i style="background:var(--sunk);opacity:.55"></i>computed earlier, never redone</span>
-      <span><i style="background:repeating-linear-gradient(135deg,var(--sunk) 0 3px,transparent 3px 6px)"></i>masked</span>
+    <h3>Prefill vs. decode: what Q × K<sup>T</sup> looks like</h3>
+    <span class="lock">Same formula both times. What changes is how many queries go in.</span>
+    <div class="pd">
+      <div class="pdcard">
+        <h4>1 · Prefill: reading the prompt</h4>
+        <div class="eq"><div class="mat"><span class="nm">Q</span><div class="body" style="grid-template-columns:repeat(1,auto)"><span class="mc q">q “I”</span><span class="mc q">q “am”</span><span class="mc q">q “Nipun”</span></div><span class="dim">3 rows</span></div><span class="op">×</span><div class="mat"><span class="nm">K<sup>T</sup></span><div class="body" style="grid-template-columns:repeat(3,auto)"><span class="mc k">k “I”</span><span class="mc k">k “am”</span><span class="mc k">k “Nipun”</span></div><span class="dim">3 columns</span></div><span class="op">=</span><div class="mat"><span class="nm">scores</span><div class="body" style="grid-template-columns:repeat(3,auto)"><span class="mc s">✓</span><span class="mc x">–</span><span class="mc x">–</span><span class="mc s">✓</span><span class="mc s">✓</span><span class="mc x">–</span><span class="mc s">✓</span><span class="mc s">✓</span><span class="mc s">✓</span></div><span class="dim">3 × 3</span></div></div>
+        <p class="hint">All three prompt words are processed together, so every word has a query. The full Q matrix times K<sup>T</sup> gives a 3 × 3 grid of scores in one go. “–” is masked: a word can't look at words after it.</p>
+      </div>
+      <div class="pdcard">
+        <h4>2 · Decode: one new word, “and”</h4>
+        <div class="eq"><div class="mat"><span class="nm">Q</span><div class="body" style="grid-template-columns:repeat(1,auto)"><span class="mc q">q “and”</span></div><span class="dim">1 row</span></div><span class="op">×</span><div class="mat"><span class="nm">K<sup>T</sup></span><div class="body" style="grid-template-columns:repeat(4,auto)"><span class="mc k">k “I”</span><span class="mc k">k “am”</span><span class="mc k">k “Nipun”</span><span class="mc k new">k “and”</span></div><span class="dim">4 columns</span></div><span class="op">=</span><div class="mat"><span class="nm">scores</span><div class="body" style="grid-template-columns:repeat(4,auto)"><span class="mc s">✓</span><span class="mc s">✓</span><span class="mc s">✓</span><span class="mc s">✓</span></div><span class="dim">1 × 4</span></div></div>
+        <p class="hint">Only “and” is new, so there is just <b>one query row</b>. The keys for “I”, “am” and “Nipun” come straight from the cache, and the key for “and” itself (outlined) is added to the cache. Result: one row of 4 scores. The earlier rows were already done during prefill, so they aren't recomputed, and the old queries aren't needed.</p>
+      </div>
     </div>
-    <div class="callout" id="qkNote"></div>
   </div>
 </section>
 
@@ -527,24 +532,7 @@ const GAP=t=>`<div class="lgap">⋮ ${t}</div>`;
 document.getElementById("wgrid").innerHTML=[1,2,3,0,64].map(l=>!l?GAP("Layers 4 – 63, each with its own set"):`<div class="wrow"><span class="lb">Layer ${l}</span><span class="wq">W_Q</span><span class="wk">W_K</span><span class="wv">W_V</span><span class="wo">W_O</span><span class="wf">FFN</span></div>`).join("");
 let seq, step;
 function kvReset(){seq=TOK.slice();step=0;kvRender(3,"Prefill: the prompt “I am Nipun” runs through all layers at once. Every token's key and value go into the cache. Queries are used and dropped.")}
-function qkRender(nNew){
-  const n=seq.length, first=n-nNew, sb=(c,i)=>`${c}<sub>${i}</sub>`;
-  const col=`grid-template-columns:repeat(${n},26px)`;
-  const ktr=`<div class="ktr">${seq.map((t,j)=>`<span class="h kh" title="key for ${t}">${sb("k",j+1)}</span>`).join("")}</div>`;
-  const qcol=`<div class="qcol">${seq.map((t,i)=>`<span class="h qh ${i<first?"drop":""}" title="${i<first?"query for "+t+": used on its own step, then discarded":"query for "+t}">${sb("q",i+1)}</span>`).join("")}</div>`;
-  let cells="";
-  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
-    const cls=j>i?"mask":i>=first?"live":"old";
-    cells+=`<span class="g ${cls}" title="${j>i?"masked":`q${i+1} · k${j+1}`}"></span>`;
-  }
-  document.getElementById("qk").innerHTML=`<span class="corner">Q · K<sup>T</sup></span>${ktr}${qcol}<div class="grid" style="${col}">${cells}</div>`;
-  const dots=nNew===1?n:nNew*(nNew+1)/2;
-  document.getElementById("qkNote").innerHTML=nNew>1
-    ?`<b>Prefill.</b> All ${nNew} queries go in together: the full Q matrix (${nNew} × d) times K<sup>T</sup> (d × ${nNew}) gives the whole ${nNew} × ${nNew} score matrix in one multiply. With the mask, that's ${dots} useful dot products.`
-    :`<b>Decode.</b> Only the new token “${seq[n-1]}” has a query. One row, q<sub>${n}</sub> (1 × d), times the full cached K<sup>T</sup> (d × ${n}) gives a single row of ${n} scores. The ${n-1} rows above were computed on earlier steps and are never redone, and their queries are gone. That's ${n} dot products instead of ${n*(n+1)/2} without a cache.`;
-}
 function kvRender(nNew,msg){
-  qkRender(nNew);
   document.getElementById("seq").innerHTML=seq.map((t,i)=>`<span class="tok ${i>=seq.length-nNew?"new":""}">${t}</span>`).join("");
   const qname=nNew===1?`q “${seq[seq.length-1]}”`:"q × 3";
   document.getElementById("cache").innerHTML=[1,2,3,0,64].map(l=>!l?GAP("Layers 4 – 63 store their own K and V too"):`<div class="crow"><span class="lb">Layer ${l}</span><span class="qchip" data-q>${qname}</span><div class="strips">
