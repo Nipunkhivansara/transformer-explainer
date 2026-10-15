@@ -160,6 +160,7 @@ table.m td.cc:hover{outline:1.5px dashed var(--hl);outline-offset:-2px}
 .strips{display:flex;flex-direction:column;gap:3px;min-width:0}
 .strip{display:flex;gap:3px;flex-wrap:wrap}
 .cell{width:26px;height:16px;border-radius:2px;font-family:var(--f-mono);font-size:.6rem;display:flex;align-items:center;justify-content:center}
+.cell sub{font-size:.5rem;line-height:1;vertical-align:baseline;position:relative;top:.15em}
 .cell.kc{background:color-mix(in oklab,var(--k) 55%,var(--surface))}
 .cell.vc{background:color-mix(in oklab,var(--v) 55%,var(--surface))}
 .cell.new{outline:2px solid var(--hl);animation:pop .45s ease}
@@ -247,7 +248,7 @@ footer{font-size:.82rem;color:var(--muted)}
     </div>
     <div class="panel">
       <h3>KV cache</h3>
-      <span class="lock">Each of the <b>64 layers</b> keeps its own cache: one key (K) and one value (V) per token. Layers 1–3 and 64 are shown. The faded, crossed-out <span class="q">q</span> is the query: used once, then thrown away.</span>
+      <span class="lock">Each of the <b>64 layers</b> keeps its own cache: a distinct key and value per token (k<sub>1</sub> v<sub>1</sub>, k<sub>2</sub> v<sub>2</sub>, …). Layers 1–3 and 64 are shown. The faded, crossed-out <span class="q">q</span> is the query: used once, then thrown away.</span>
       <div class="seq" id="seq"></div>
       <div class="cache" id="cache"></div>
       <div class="log callout" id="log"></div>
@@ -502,8 +503,8 @@ function kvRender(nNew,msg){
   document.getElementById("seq").innerHTML=seq.map((t,i)=>`<span class="tok ${i>=seq.length-nNew?"new":""}">${t}</span>`).join("");
   const qname=nNew===1?`q “${seq[seq.length-1]}”`:"q × 3";
   document.getElementById("cache").innerHTML=[1,2,3,0,64].map(l=>!l?GAP("Layers 4 – 63 store their own K and V too"):`<div class="crow"><span class="lb">Layer ${l}</span><span class="qchip" data-q>${qname}</span><div class="strips">
-    <div class="strip">${seq.map((t,i)=>`<span class="cell kc ${i>=seq.length-nNew?"new":""}" title="key for ${t}">K</span>`).join("")}</div>
-    <div class="strip">${seq.map((t,i)=>`<span class="cell vc ${i>=seq.length-nNew?"new":""}" title="value for ${t}">V</span>`).join("")}</div></div></div>`).join("");
+    <div class="strip">${seq.map((t,i)=>`<span class="cell kc ${i>=seq.length-nNew?"new":""}" title="key for ${t}">k<sub>${i+1}</sub></span>`).join("")}</div>
+    <div class="strip">${seq.map((t,i)=>`<span class="cell vc ${i>=seq.length-nNew?"new":""}" title="value for ${t}">v<sub>${i+1}</sub></span>`).join("")}</div></div></div>`).join("");
   document.getElementById("log").innerHTML=msg;
   document.getElementById("sTok").textContent=seq.length;
   document.getElementById("sNew").textContent=nNew;
