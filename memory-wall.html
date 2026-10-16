@@ -144,6 +144,28 @@ table.t td.n,table.t th.n{text-align:right;font-family:var(--f-mono);font-varian
 .faq .ans{padding:0 4px 18px;display:flex;flex-direction:column;gap:8px}
 .faq .see{font-family:var(--f-mono);font-size:.8rem;color:var(--muted)}
 footer{font-size:.82rem;color:var(--muted)}
+
+/* growth chart: one axis, indexed to the 2016 chip; chart-only steps validated per mode */
+:root{--cc:#4B57D1;--cm:#B8720E}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--cc:#6F7BE8;--cm:#C4842A}}
+:root[data-theme="dark"]{--cc:#6F7BE8;--cm:#C4842A}
+.gchart{position:relative}
+.gchart svg{width:100%;height:auto;display:block;overflow:visible}
+.gchart .gl{stroke:var(--line);stroke-width:1}
+.gchart .ax{stroke:var(--muted);stroke-width:1}
+.gchart text{fill:var(--muted);font-family:var(--f-mono);font-size:11px}
+.gchart text.ink{fill:var(--ink);font-weight:500}
+.gchart .gap{fill:color-mix(in oklab,var(--pos) 12%,transparent)}
+.gchart .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.gchart .dot{stroke:var(--surface);stroke-width:2}
+.gchart .cross{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+.gchart .bar4{fill:var(--cm)}
+.gchart .hit{fill:transparent;cursor:crosshair}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:.8rem;box-shadow:0 4px 14px rgba(0,0,0,.12);min-width:170px;opacity:0;transition:opacity .12s}
+.tip b{font-family:var(--f-display)}
+.tip .r{white-space:nowrap;display:flex;justify-content:space-between;gap:12px;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.tip i{display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:middle}
+.dtable summary{cursor:pointer;font-size:.85rem;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -160,6 +182,28 @@ footer{font-size:.82rem;color:var(--muted)}
     <div class="stat"><span class="num">≈ 24 tok/s</span><span class="lbl">what one user gets from a 70B model</span></div>
   </div>
 </header>
+
+
+<section id="wall">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Start here · The wall itself</span>
+    <h2>Compute raced ahead. Memory didn't.</h2>
+    <p>Ever wondered why this problem keeps getting worse, not better? Each new GPU generation adds far more maths than memory bandwidth. Since 2016, NVIDIA's data-centre chips have gained about <b class="c">100×</b> in FP16 compute but only about <b class="m">11×</b> in bandwidth. The shaded gap between the two lines is the memory wall.</p>
+  </div>
+  <div class="panel">
+    <div class="tabs" id="gTabs">
+      <button class="tab" data-g="growth" aria-pressed="true">Growth since 2016</button>
+      <button class="tab" data-g="ratio" aria-pressed="false">Operations per byte</button>
+    </div>
+    <div class="legend" id="gLegend"><span><i style="background:var(--cc)"></i>Peak FP16 compute</span><span><i style="background:var(--cm)"></i>Memory bandwidth</span></div>
+    <div class="gchart"><svg id="gSvg" viewBox="0 0 640 330" role="img" aria-label="Compute and memory bandwidth growth of NVIDIA data-centre GPUs, 2016 to 2025"></svg><div class="tip" id="gTip"></div></div>
+    <p class="hint" id="gNote"></p>
+    <details class="dtable"><summary>Show the numbers as a table</summary>
+      <div class="tbl-wrap" style="margin-top:8px"><table class="t" id="gTbl"></table></div>
+    </details>
+    <p class="hint">Vendor peak specs: dense FP16 tensor throughput (the P100 predates tensor cores) and HBM bandwidth. Years are roughly when each chip shipped. The same pattern holds industry-wide: Gholami et al.'s 2024 study "AI and Memory Wall" found server compute growing about 3× every two years against about 1.6× for memory bandwidth.</p>
+  </div>
+</section>
 
 <section id="concepts">
   <div style="display:flex;flex-direction:column;gap:8px">
@@ -501,6 +545,78 @@ let h=`<thead><tr><th>Model</th><th class="n">Weights FP16</th><th class="n">KV 
 ROWS.forEach(r=>h+=`<tr><td>${r.n}</td><td class="n">${fmtB(r.w)}</td><td class="n">${fmtKB(r.kv)}</td><td class="n">${fmtB(r.kv*131072)}</td><td class="n">${(H.bw/r.rd).toFixed(r.rd>3e11?1:0)} tok/s${r.moe?"*":""}</td></tr>`);
 $("tbl").innerHTML=h+`</tbody>`;
 $("tbl").insertAdjacentHTML("afterend",`<p class="hint">* Counts only the ~37B parameters active per token. At larger batches, more experts get touched each step and the reads grow.</p>`);
+})();
+
+/* ---------- growth chart ---------- */
+(()=>{
+const D=[
+ {c:"P100",y:2016,f:21.2,bw:0.732},
+ {c:"V100",y:2017,f:125,bw:0.9},
+ {c:"A100",y:2020,f:312,bw:1.555},
+ {c:"H100",y:2022,f:989,bw:3.35},
+ {c:"H200",y:2024,f:989,bw:4.8},
+ {c:"B200",y:2025,f:2250,bw:8}
+];
+D.forEach(d=>{d.fi=d.f/D[0].f;d.bi=d.bw/D[0].bw;d.r=d.f/d.bw});
+const svg=document.getElementById("gSvg"),tip=document.getElementById("gTip"),note=document.getElementById("gNote"),leg=document.getElementById("gLegend");
+const T=20,B=290;let W=640,L=56,R=530;
+const xs=y=>L+(y-2016)/(2025-2016)*(R-L);
+let mode="growth";
+function growth(){
+  const ys=v=>B-Math.log10(v)/Math.log10(200)*(B-T);
+  let s="";
+  [1,2,5,10,20,50,100,200].forEach(v=>s+=`<line class="gl" x1="${L}" x2="${R}" y1="${ys(v)}" y2="${ys(v)}"/><text x="${L-8}" y="${ys(v)+4}" text-anchor="end">${v}×</text>`);
+  [2016,2018,2020,2022,2024].forEach(y=>s+=`<text x="${xs(y)}" y="${B+20}" text-anchor="middle">${y}</text>`);
+  s+=`<line class="ax" x1="${L}" x2="${R}" y1="${B}" y2="${B}"/>`;
+  const top=D.map(d=>`${xs(d.y)},${ys(d.fi)}`).join(" "),bot=D.slice().reverse().map(d=>`${xs(d.y)},${ys(d.bi)}`).join(" ");
+  s+=`<polygon class="gap" points="${top} ${bot}"/>`;
+  s+=`<text class="ink" x="${xs(2021.6)}" y="${ys(13)}" text-anchor="middle" style="fill:var(--pos)">the gap</text>`;
+  s+=`<polyline class="ln" style="stroke:var(--cc)" points="${top}"/><polyline class="ln" style="stroke:var(--cm)" points="${D.map(d=>`${xs(d.y)},${ys(d.bi)}`).join(" ")}"/>`;
+  D.forEach(d=>{s+=`<circle class="dot" cx="${xs(d.y)}" cy="${ys(d.fi)}" r="4.5" style="fill:var(--cc)"/><circle class="dot" cx="${xs(d.y)}" cy="${ys(d.bi)}" r="4.5" style="fill:var(--cm)"/>`});
+  const e=D[D.length-1];
+  s+=`<text class="ink" x="${R+10}" y="${ys(e.fi)+4}">compute</text><text class="ink" x="${R+10}" y="${ys(e.fi)+18}">${e.fi.toFixed(0)}×</text><text class="ink" x="${R+10}" y="${ys(e.bi)+4}">bandwidth</text><text class="ink" x="${R+10}" y="${ys(e.bi)+18}">${e.bi.toFixed(0)}×</text>`;
+  s+=`<line class="cross" id="gX" x1="0" x2="0" y1="${T}" y2="${B}" style="opacity:0"/>`;
+  D.forEach((d,i)=>{const a=i?(xs(D[i-1].y)+xs(d.y))/2:L-10,b=i<D.length-1?(xs(d.y)+xs(D[i+1].y))/2:R+10;s+=`<rect class="hit" data-i="${i}" x="${a}" y="${T}" width="${b-a}" height="${B-T}"/>`});
+  svg.innerHTML=s;
+  note.innerHTML=`Both lines start at 1× for the 2016 P100. By the B200, compute is ${e.fi.toFixed(0)}× higher but bandwidth only ${e.bi.toFixed(0)}×. Hover or tap any year for the chip's real numbers.`;
+  leg.hidden=false;
+}
+function ratio(){
+  const ys=v=>B-v/300*(B-T),bw=W<480?30:44;
+  let s="";
+  [0,50,100,150,200,250,300].forEach(v=>s+=`<line class="gl" x1="${L}" x2="${R}" y1="${ys(v)}" y2="${ys(v)}"/><text x="${L-8}" y="${ys(v)+4}" text-anchor="end">${v}</text>`);
+  s+=`<line class="ax" x1="${L}" x2="${R}" y1="${B}" y2="${B}"/>`;
+  D.forEach((d,i)=>{const x=L+20+i*((R-L-40)/(D.length-1))-bw/2,h=B-ys(d.r);
+    s+=`<path class="bar4" d="M${x},${B} V${ys(d.r)+4} q0,-4 4,-4 h${bw-8} q4,0 4,4 V${B} Z"/>`;
+    s+=`<text class="ink" x="${x+bw/2}" y="${ys(d.r)-8}" text-anchor="middle">${d.r.toFixed(0)}</text><text x="${x+bw/2}" y="${B+18}" text-anchor="middle">${d.c}</text><text x="${x+bw/2}" y="${B+32}" text-anchor="middle" style="font-size:10px">${d.y}</text>`;
+    s+=`<rect class="hit" data-i="${i}" x="${x-10}" y="${T}" width="${bw+20}" height="${B-T+20}"/>`});
+  s+=`<line x1="${L}" x2="${R}" y1="${ys(1)}" y2="${ys(1)}" style="stroke:var(--pos);stroke-width:2;stroke-dasharray:5 4"/><text x="${R+10}" y="${ys(1)+4}" style="fill:var(--pos)" class="ink">decode ≈ 1</text>`;
+  svg.innerHTML=s;
+  note.innerHTML=`How many operations each chip can do in the time it reads one byte (peak FLOP/s ÷ bandwidth). It rose from 29 to roughly 300 and has stayed there. LLM decode offers about 1, the dashed line at the bottom.`;
+  leg.hidden=true;
+}
+function draw(){W=Math.round(Math.min(640,Math.max(340,svg.parentElement.clientWidth)));L=W<480?40:56;R=W-(W<480?96:110);svg.setAttribute("viewBox",`0 0 ${W} 330`);mode==="growth"?growth():ratio();tip.style.opacity=0}
+function show(i,ev){
+  const d=D[i],box=svg.getBoundingClientRect(),k=box.width/W,pr=svg.parentElement.getBoundingClientRect();
+  tip.innerHTML=`<b>${d.c}</b> <span class="hint">${d.y}</span>
+   <div class="r"><span><i style="background:var(--cc)"></i>compute</span><span>${d.f.toLocaleString()} TFLOP/s</span></div>
+   <div class="r"><span><i style="background:var(--cm)"></i>bandwidth</span><span>${d.bw} TB/s</span></div>
+   <div class="r"><span>ops per byte</span><span>${d.r.toFixed(0)}</span></div>
+   ${mode==="growth"?`<div class="r"><span>vs. 2016</span><span>${d.fi.toFixed(0)}× / ${d.bi.toFixed(1)}×</span></div>`:""}`;
+  const x=(mode==="growth"?xs(d.y):L+20+i*((R-L-40)/(D.length-1)))*k;
+  const tw=tip.offsetWidth;
+  tip.style.left=Math.min(Math.max(x+(box.left-pr.left)+12,0),pr.width-tw)+"px";
+  tip.style.top="8px";tip.style.opacity=1;
+  const c=document.getElementById("gX");if(c){c.setAttribute("x1",xs(d.y));c.setAttribute("x2",xs(d.y));c.style.opacity=1}
+}
+svg.addEventListener("pointermove",e=>{const h=e.target.closest(".hit");if(h)show(+h.dataset.i,e)});
+svg.addEventListener("click",e=>{const h=e.target.closest(".hit");if(h)show(+h.dataset.i,e)});
+svg.addEventListener("pointerleave",()=>{tip.style.opacity=0;const c=document.getElementById("gX");if(c)c.style.opacity=0});
+document.getElementById("gTabs").addEventListener("click",e=>{const t=e.target.closest(".tab");if(!t)return;mode=t.dataset.g;
+  document.querySelectorAll("#gTabs .tab").forEach(b=>b.setAttribute("aria-pressed",b===t));draw()});
+document.getElementById("gTbl").innerHTML=`<thead><tr><th>Chip</th><th class="n">Year</th><th class="n">FP16 TFLOP/s</th><th class="n">Bandwidth TB/s</th><th class="n">Ops per byte</th><th class="n">Compute vs 2016</th><th class="n">Bandwidth vs 2016</th></tr></thead><tbody>${D.map(d=>`<tr><td>${d.c}</td><td class="n">${d.y}</td><td class="n">${d.f.toLocaleString()}</td><td class="n">${d.bw}</td><td class="n">${d.r.toFixed(0)}</td><td class="n">${d.fi.toFixed(1)}×</td><td class="n">${d.bi.toFixed(1)}×</td></tr>`).join("")}</tbody>`;
+draw();
+let rt;window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(draw,120)});
 })();
 </script>
 </body>
