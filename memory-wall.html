@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="An interactive look at why language models spend most of their time waiting on memory: arithmetic intensity, the roofline, prefill vs decode, batching and the KV cache, with real numbers.">
+<title>The Memory Wall</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+body{margin:0}[hidden]{display:none!important}
+/* Companion to "Inside the Forward Pass": same lab-notebook column, same tokens. Here --q marks compute, --k marks memory/bytes, --v marks the KV cache, --pos marks "memory-bound", --v doubles as "compute-bound". */
+:root{
+  --bg:#F1F3F6; --surface:#FFFFFF; --sunk:#E7EBF0; --ink:#152030; --muted:#5A6576; --line:#D5DCE5;
+  --q:#4B57D1; --k:#B8720E; --v:#0F8577; --ffn:#8C47B8;
+  --pos:#C9472E; --neg:#3569A3; --hl:#152030;
+  --f-display:"Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --f-body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0E131A; --surface:#161D27; --sunk:#1D2531; --ink:#E5EAF1; --muted:#95A1B3; --line:#2A3544;
+  --q:#8E97F4; --k:#E6A84E; --v:#43C3B0; --ffn:#BE8EE8; --pos:#F07E62; --neg:#73A6DD; --hl:#E5EAF1; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0E131A; --surface:#161D27; --sunk:#1D2531; --ink:#E5EAF1; --muted:#95A1B3; --line:#2A3544;
+  --q:#8E97F4; --k:#E6A84E; --v:#43C3B0; --ffn:#BE8EE8; --pos:#F07E62; --neg:#73A6DD; --hl:#E5EAF1; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15.5px;line-height:1.6;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:28px 64px}
+.wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.1}
+h1{font-size:clamp(2.1rem,5.5vw,3.5rem);font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(1.5rem,3.2vw,2.1rem);font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.15rem;font-weight:700}
+p{margin:0;max-width:66ch}
+.eyebrow{font-family:var(--f-mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.c{color:var(--q)}.m{color:var(--k)}.kv{color:var(--v)}
+b.c,b.m,b.kv{font-weight:600}
+.tok{font-family:var(--f-mono);font-size:1rem;padding:6px 12px;border:1.5px solid var(--ink);border-radius:4px;background:var(--surface)}
+
+/* hero */
+header{display:flex;flex-direction:column;gap:18px}
+.lede{font-size:1.08rem;color:var(--muted)}
+
+/* rail + bench, as in part 1 of the forward pass */
+section{display:flex;flex-direction:column;gap:20px}
+.rail-wrap{overflow-x:auto;margin-inline:-4px;padding:4px}
+.rail{display:flex;gap:0;min-width:max-content}
+.st{appearance:none;border:0;background:none;color:var(--muted);font:inherit;cursor:pointer;display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  padding:10px 14px 12px;border-bottom:2px solid var(--line);min-width:96px;text-align:left}
+.st .n{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.08em}
+.st .t{font-size:.86rem;font-weight:500;line-height:1.25;color:var(--ink);opacity:.72}
+.st:hover .t{opacity:1}
+.st[aria-current="true"]{border-bottom:3px solid var(--ink)}
+.st[aria-current="true"] .t{opacity:1;font-weight:600}
+.st[aria-current="true"] .n{color:var(--ink)}
+.st:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--q);outline-offset:2px}
+.bench{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:28px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:24px}
+@media (max-width:860px){.bench{grid-template-columns:1fr;padding:18px}}
+.viz{min-width:0;display:flex;flex-direction:column;gap:14px}
+.expl{min-width:0;display:flex;flex-direction:column;gap:12px}
+.expl .note{font-size:.88rem;color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
+.navrow{display:flex;gap:10px;margin-top:auto;padding-top:8px}
+.btn{appearance:none;font:inherit;font-size:.9rem;font-weight:500;border:1.5px solid var(--ink);background:var(--surface);color:var(--ink);padding:7px 14px;border-radius:6px;cursor:pointer}
+.btn.solid{background:var(--ink);color:var(--surface)}
+.btn:disabled{opacity:.35;cursor:default}
+.btn:hover:not(:disabled){transform:translateY(-1px)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{appearance:none;font:inherit;font-family:var(--f-mono);font-size:.82rem;padding:5px 12px;border-radius:999px;border:1.5px solid var(--ink);color:var(--ink);background:transparent;cursor:pointer}
+.tab[aria-pressed="true"]{background:var(--ink);color:var(--surface)}
+.hint{font-size:.82rem;color:var(--muted)}
+.callout{font-size:.92rem;background:var(--sunk);border-radius:6px;padding:10px 12px}
+.formula{font-family:var(--f-mono);font-size:.84rem;background:var(--sunk);border-radius:6px;padding:12px 14px;overflow-x:auto;white-space:pre;line-height:1.7;font-variant-numeric:tabular-nums}
+.formula b{font-weight:600}
+
+/* bars */
+.bars{display:flex;flex-direction:column;gap:8px}
+.bar{display:grid;grid-template-columns:110px minmax(0,1fr) 84px;gap:10px;align-items:center;font-family:var(--f-mono);font-size:.8rem}
+.bar .track{height:18px;background:var(--sunk);border-radius:3px;overflow:hidden}
+.bar .fill{height:100%;background:var(--ink);border-radius:3px;transition:width .35s ease;min-width:2px}
+.bar .val{text-align:right;color:var(--muted)}
+@media (max-width:560px){.bar{grid-template-columns:78px minmax(0,1fr) 70px;font-size:.72rem}}
+
+/* badges */
+.badge{display:inline-block;font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;padding:3px 9px;border-radius:999px;font-weight:600}
+.badge.mem{background:color-mix(in oklab,var(--pos) 18%,var(--surface));color:var(--pos)}
+.badge.cmp{background:color-mix(in oklab,var(--v) 18%,var(--surface));color:var(--v)}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:560px){.stats{grid-template-columns:1fr 1fr}}
+.stat{border-top:2px solid var(--ink);padding-top:8px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.stat .num{font-family:var(--f-display);font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2;overflow-wrap:anywhere}
+.stat .lbl{font-size:.82rem;color:var(--muted)}
+.stat.c{border-top-color:var(--q)}.stat.m{border-top-color:var(--k)}.stat.kv{border-top-color:var(--v)}
+
+/* panels */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.pd{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:860px){.pd{grid-template-columns:1fr}}
+.pdcard{border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.pdcard h4{margin:0;font-family:var(--f-display);font-size:1rem}
+
+/* roofline */
+.roof{width:100%;height:auto;display:block}
+.roof .ax{stroke:var(--line);stroke-width:1.5}
+.roof .grid{stroke:var(--line);stroke-width:1;stroke-dasharray:2 4}
+.roof .rl{stroke:var(--ink);stroke-width:3;fill:none;stroke-linejoin:round}
+.roof .memzone{fill:color-mix(in oklab,var(--pos) 7%,transparent)}
+.roof .ridge{stroke:var(--k);stroke-width:1.5;stroke-dasharray:4 4}
+.roof text{fill:var(--muted);font-family:var(--f-mono);font-size:11px}
+.roof text.lab{fill:var(--ink);font-weight:500}
+
+/* calculator */
+.calcgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:24px}
+@media (max-width:860px){.calcgrid{grid-template-columns:1fr}}
+.ctl{display:flex;flex-direction:column;gap:12px}
+.ctl label{font-size:.9rem;display:flex;flex-direction:column;gap:4px}
+select{font:inherit;font-size:.9rem;background:var(--surface);color:var(--ink);border:1.5px solid var(--line);border-radius:6px;padding:7px 10px}
+input[type=range]{width:100%;accent-color:var(--ink)}
+.stackbar{display:flex;height:40px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--sunk)}
+.stackbar div{display:flex;align-items:center;justify-content:center;font-family:var(--f-mono);font-size:.72rem;color:var(--surface);min-width:0;overflow:hidden;white-space:nowrap;transition:width .35s ease}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.82rem;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+
+/* table */
+.tbl-wrap{overflow-x:auto}
+table.t{border-collapse:collapse;width:100%;font-size:.9rem}
+table.t th,table.t td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+table.t th{font-weight:600;font-size:.82rem;color:var(--muted)}
+table.t td.n,table.t th.n{text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+
+/* faq */
+.faq{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.faq details{border-bottom:1px solid var(--line)}
+.faq summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:minmax(0,1fr) 24px;gap:12px;align-items:start;padding:16px 4px;font-family:var(--f-display);font-weight:600;font-size:1.05rem;line-height:1.35}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--f-mono);font-size:1.3rem;line-height:1;color:var(--muted);text-align:center;transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq summary:focus-visible{outline:2px solid var(--q);outline-offset:2px}
+.faq .ans{padding:0 4px 18px;display:flex;flex-direction:column;gap:8px}
+.faq .see{font-family:var(--f-mono);font-size:.8rem;color:var(--muted)}
+footer{font-size:.82rem;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <span class="eyebrow">Why language models wait more than they think</span>
+  <h1>The Memory Wall</h1>
+  <p class="lede">Ever wondered why a GPU that can do almost a quadrillion operations a second types out a 70-billion-parameter model's answer at roughly 24 tokens a second? The maths isn't the slow part. Getting the numbers to the maths is. Follow one model through prefill and decode, watch where the time goes, and try the numbers yourself.</p>
+  <div class="stats">
+    <div class="stat c"><span class="num">989 TFLOP/s</span><span class="lbl">what an H100 can <b>compute</b> (FP16)</span></div>
+    <div class="stat m"><span class="num">3.35 TB/s</span><span class="lbl">what it can <b>read</b> from memory</span></div>
+    <div class="stat"><span class="num">≈ 24 tok/s</span><span class="lbl">what one user gets from a 70B model</span></div>
+  </div>
+</header>
+
+<section id="concepts">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 1 · The idea, step by step</span>
+    <h2>Click any stage</h2>
+  </div>
+  <div class="rail-wrap"><div class="rail" id="rail" role="tablist"></div></div>
+  <div class="bench">
+    <div class="viz" id="viz"></div>
+    <div class="expl">
+      <span class="eyebrow" id="stEye"></span>
+      <h3 id="stTitle"></h3>
+      <div id="stBody" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="navrow">
+        <button class="btn" id="prev">← Previous</button>
+        <button class="btn solid" id="next">Next →</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="phases">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 2 · Same model, two very different jobs</span>
+    <h2>Prefill vs. decode, with the real arithmetic</h2>
+    <p>Llama 3 70B in FP16 on one H100. Weights: 70.6 billion parameters × 2 bytes ≈ <b class="mono">141 GB</b>. Every weight is used for one multiply and one add per token, so <b class="mono">2 FLOPs per parameter per token</b>.</p>
+  </div>
+  <div class="pd">
+    <div class="pdcard">
+      <h4>1 · Prefill: reading a 2,000-token prompt</h4>
+      <div class="formula">FLOPs  = 2 × 70.6B × 2,000   = <b class="c">282 TFLOP</b>
+Bytes  = weights, read once    = <b class="m">141 GB</b>
+AI     = 282T ÷ 141G           = <b>2,000 FLOP/byte</b>
+
+Maths time   = 282T ÷ 989T/s   = <b class="c">285 ms</b>
+Memory time  = 141G ÷ 3.35T/s  = <b class="m">42 ms</b></div>
+      <div class="bars">
+        <div class="bar"><span>maths</span><div class="track"><div class="fill" style="width:100%;background:var(--q)"></div></div><span class="val">285 ms</span></div>
+        <div class="bar"><span>memory</span><div class="track"><div class="fill" style="width:14.7%;background:var(--k)"></div></div><span class="val">42 ms</span></div>
+      </div>
+      <p><span class="badge cmp">compute-bound</span></p>
+      <p class="hint">All 2,000 tokens go through together, so each weight that's fetched gets reused 2,000 times. The cores are the bottleneck. This sets your <b>time to first token</b>.</p>
+    </div>
+    <div class="pdcard">
+      <h4>2 · Decode: generating one new token</h4>
+      <div class="formula">FLOPs  = 2 × 70.6B × 1        = <b class="c">141 GFLOP</b>
+Bytes  = all weights, again    = <b class="m">141 GB</b>
+AI     = 141G ÷ 141G           = <b>1 FLOP/byte</b>
+
+Maths time   = 141G ÷ 989T/s   = <b class="c">0.14 ms</b>
+Memory time  = 141G ÷ 3.35T/s  = <b class="m">42 ms</b></div>
+      <div class="bars">
+        <div class="bar"><span>maths</span><div class="track"><div class="fill" style="width:0.34%;background:var(--q)"></div></div><span class="val">0.14 ms</span></div>
+        <div class="bar"><span>memory</span><div class="track"><div class="fill" style="width:100%;background:var(--k)"></div></div><span class="val">42 ms</span></div>
+      </div>
+      <p><span class="badge mem">memory-bound</span></p>
+      <p class="hint">Only one token is new, so every one of the 141 GB is read to do a single multiply-add. 42 ms per token is <b>≈ 24 tokens/s</b>, and the cores are idle 99.7% of that time. This sets your <b>tokens per second</b>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="calc">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 3 · Try it yourself</span>
+    <h2>The memory wall calculator</h2>
+    <p>Pick a model and a chip, then push the batch size and context length and watch which wall you hit first.</p>
+  </div>
+  <div class="panel">
+    <div class="calcgrid">
+      <div class="ctl">
+        <label>Model<select id="cModel"></select></label>
+        <label>GPU<select id="cGpu"></select></label>
+        <label>Weight precision<select id="cPrec"><option value="2">FP16 / BF16 · 2 bytes</option><option value="1">FP8 / INT8 · 1 byte</option><option value="0.5">INT4 · 0.5 bytes</option></select></label>
+        <label><span>Users in the batch: <b class="mono" id="cBv"></b></span><input type="range" id="cB" min="0" max="9" step="1" value="0"></label>
+        <label><span>Context per user: <b class="mono" id="cCv"></b> tokens</span><input type="range" id="cC" min="0" max="7" step="1" value="3"></label>
+        <label><span>Prompt length (prefill): <b class="mono" id="cPv"></b> tokens</span><input type="range" id="cP" min="0" max="6" step="1" value="3"></label>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+        <div class="stats">
+          <div class="stat"><span class="num" id="oAI"></span><span class="lbl">decode intensity, FLOP/byte</span></div>
+          <div class="stat"><span class="num" id="oTPS"></span><span class="lbl">tokens/s per user</span></div>
+          <div class="stat"><span class="num" id="oAgg"></span><span class="lbl">tokens/s, all users</span></div>
+          <div class="stat m"><span class="num" id="oW"></span><span class="lbl">weights</span></div>
+          <div class="stat kv"><span class="num" id="oKV"></span><span class="lbl">KV cache, all users</span></div>
+          <div class="stat c"><span class="num" id="oTT"></span><span class="lbl">prefill · time to first token</span></div>
+        </div>
+        <div id="oBadge"></div>
+        <svg class="roof" id="cRoof" viewBox="0 0 600 300" role="img" aria-label="Roofline chart with this workload marked"></svg>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <h3>What gets read from memory on every decode step</h3>
+      <div class="stackbar" id="cRead"></div>
+      <div class="legend"><span><i style="background:var(--k)"></i>Weights (shared by every user)</span><span><i style="background:var(--v)"></i>KV cache (one per user)</span></div>
+      <p class="hint" id="cReadNote"></p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <h3>Does it fit?</h3>
+      <div class="bars" id="cFit"></div>
+      <p class="hint" id="cFitNote"></p>
+    </div>
+    <p class="hint">An idealised model: attention FLOPs, activations, kernel overheads and multi-GPU communication are left out, the KV cache is kept in FP16, and compute peak stays at the FP16 figure. Real systems land below these numbers, but the shape of the curve is right.</p>
+  </div>
+</section>
+
+<section id="models">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 4 · Real models</span>
+    <h2>Today's open models, side by side</h2>
+    <p>KV per token = 2 (K and V) × layers × KV heads × head size × 2 bytes. "Max decode" is H100 bandwidth ÷ weight bytes at batch 1: a hard ceiling, not a benchmark.</p>
+  </div>
+  <div class="panel">
+    <div class="tbl-wrap"><table class="t" id="tbl"></table></div>
+    <p class="hint">Models bigger than 80 GB don't fit on one H100, so they're split across several, which adds bandwidth but also communication cost. DeepSeek-V3 is a mixture-of-experts model: only about 37B of its 671B parameters are used per token, and its compressed attention (MLA) shrinks the cache further. GPT-4, Claude and Gemini don't publish their architectures, so they can't be listed.</p>
+  </div>
+</section>
+
+<section id="questions">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">Part 5 · Questions</span>
+    <h2>The questions that make it click</h2>
+    <p>The points that usually stay fuzzy after seeing the formula. Tap one to open it.</p>
+  </div>
+  <div class="faq">
+    <details>
+      <summary>Is arithmetic intensity a property of the chip or of the workload?</summary>
+      <div class="ans"><p>Of the workload. Every operation does some amount of work per byte it moves: an elementwise add on FP32 numbers does about 0.08, decode at batch 1 does about 1, a big matrix multiply does over 1,000. The chip has its own ratio, peak FLOP/s ÷ bandwidth, called the ridge point. Compare the two and you know which wall you'll hit. <span class="see">Stages 2 and 3.</span></p></div>
+    </details>
+    <details>
+      <summary>If the intensity is 64 and the bandwidth is 64 GB/s, is the throughput 64 × 64?</summary>
+      <div class="ans"><p>Yes: 4,096 GFLOP/s, as long as that's below the chip's peak. Achievable throughput is always min(intensity × bandwidth, peak). That one line is the whole roofline model. <span class="see">Stage 4.</span></p></div>
+    </details>
+    <details>
+      <summary>Does the KV cache count only the prompt, or the output too?</summary>
+      <div class="ans"><p>Both. It holds every token in the context: the prompt plus everything generated so far. Each new output token adds its own key and value in every layer, so the cache keeps growing until the sequence ends. A "100k-token context" means 100k in total. <span class="see">Stage 8.</span></p></div>
+    </details>
+    <details>
+      <summary>Why are output tokens usually priced higher than input tokens?</summary>
+      <div class="ans"><p>A big part of it is this page. Input tokens go through prefill, where thousands of tokens share one read of the weights, so the GPU runs near full speed. Output tokens come out one at a time, each paying for a full read of the weights and the cache. Same chip, very different amounts of useful work per second. <span class="see">Part 2.</span></p></div>
+    </details>
+    <details>
+      <summary>Why don't providers just batch thousands of users together?</summary>
+      <div class="ans"><p>They batch as much as they can, but each user brings their own KV cache, and it has to be read on every step too. Unlike the weights, it isn't shared. With long contexts the cache soon outweighs the model, intensity stops climbing, and memory capacity runs out. Bigger batches also make each user's tokens arrive more slowly. <span class="see">Stages 7 and 8.</span></p></div>
+    </details>
+    <details>
+      <summary>Does quantisation make the model faster even if the maths is the same?</summary>
+      <div class="ans"><p>For decode, yes. Going from FP16 to INT4 cuts the bytes per weight by 4×, and since decode time is mostly bytes ÷ bandwidth, the speed ceiling rises by roughly 4×. The multiply-adds barely matter, because the cores were idle anyway. <span class="see">Try the precision menu in Part 3.</span></p></div>
+    </details>
+    <details>
+      <summary>How does speculative decoding get around the wall?</summary>
+      <div class="ans"><p>A small, cheap model guesses the next few tokens. The big model then checks all of them in one pass, like a tiny prefill. The weights are read once but used for several tokens, so the intensity goes up. When the guesses are right you get several tokens for the price of one read.</p></div>
+    </details>
+    <details>
+      <summary>Why are Groq and Cerebras so much faster?</summary>
+      <div class="ans"><p>They attack the bandwidth term directly. Instead of keeping weights in HBM next to the chip, they keep them in on-chip SRAM, which is far faster to read, and spread the model across many chips. More bytes per second means more tokens per second, which is how they reach 1,000+ tokens/s on some models.</p></div>
+    </details>
+    <details>
+      <summary>So how does anyone make inference faster?</summary>
+      <div class="ans"><p>Every trick is one of three moves. <b>Move fewer bytes:</b> quantisation, grouped-query attention, compressed caches like MLA, mixture-of-experts. <b>Do more work per byte:</b> batching, speculative decoding, FlashAttention (which keeps data in fast on-chip memory). <b>Get more bandwidth:</b> HBM3e on H200 and B200, or SRAM-based chips. Prefill is a maths problem; decode is a memory problem, and most of the effort goes into the second.</p></div>
+    </details>
+  </div>
+</section>
+
+<footer>Companion to <a href="https://nipunkhivansara.github.io/transformer-explainer/" style="color:inherit">Inside the Forward Pass</a>. Chip figures are dense FP16 tensor-core peaks and HBM bandwidth from vendor specs; every speed shown is a theoretical upper bound.</footer>
+</div>
+
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const fmtB=b=>b>=1e12?(b/1e12).toFixed(b>=1e13?1:2)+" TB":b>=1e9?(b/1e9).toFixed(b>=1e11?0:1)+" GB":b>=1e6?(b/1e6).toFixed(1)+" MB":(b/1e3).toFixed(0)+" KB";
+const fmtN=n=>n>=1e4?(n/1e3).toFixed(0)+"k":n>=1e3?(n/1e3).toFixed(1)+"k":n>=10?n.toFixed(0):n>=1?n.toFixed(1):n.toPrecision(2);
+const fmtKB=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":(b/1024).toFixed(0)+" KB";
+const fmtT=s=>s<1e-3?(s*1e6).toFixed(0)+" µs":s<1?(s*1000).toFixed(s<0.01?1:0)+" ms":s.toFixed(2)+" s";
+const fmtAI=a=>a<1?a.toFixed(2):a<10?a.toFixed(1):a.toFixed(0);
+
+const GPUS=[
+ {n:"NVIDIA H100 SXM",f:989e12,bw:3.35e12,mem:80e9},
+ {n:"NVIDIA H200",f:989e12,bw:4.8e12,mem:141e9},
+ {n:"NVIDIA B200",f:2250e12,bw:8e12,mem:192e9},
+ {n:"NVIDIA A100 80GB",f:312e12,bw:2.04e12,mem:80e9},
+ {n:"GeForce RTX 4090",f:165e12,bw:1.01e12,mem:24e9}
+];
+const MODELS=[
+ {n:"Llama 3 8B",p:8.03e9,L:32,kv:8,hd:128},
+ {n:"Mistral 7B",p:7.24e9,L:32,kv:8,hd:128},
+ {n:"Gemma 2 27B",p:27.2e9,L:46,kv:16,hd:128},
+ {n:"Llama 3 70B",p:70.6e9,L:80,kv:8,hd:128},
+ {n:"Qwen 2.5 72B",p:72.7e9,L:80,kv:8,hd:128},
+ {n:"Llama 3.1 405B",p:405e9,L:126,kv:8,hd:128},
+ {n:"GPT-3 175B (no GQA)",p:175e9,L:96,kv:96,hd:128}
+];
+const kvTok=m=>2*m.L*m.kv*m.hd*2;
+
+/* ---------- roofline ---------- */
+const X0=-1,X1=4,Y0=11,Y1=16;
+const RX=v=>60+(Math.log10(v)-X0)/(X1-X0)*520, RY=v=>255-(Math.log10(v)-Y0)/(Y1-Y0)*235;
+function roofSVG(g,pts){
+  const ridge=g.f/g.bw;
+  let s="";
+  for(let e=X0;e<=X1;e++)s+=`<line class="grid" x1="${RX(10**e)}" y1="20" x2="${RX(10**e)}" y2="255"/><text x="${RX(10**e)}" y="272" text-anchor="middle">${10**e>=1?(10**e).toLocaleString():10**e}</text>`;
+  for(let e=Y0;e<=Y1;e++)s+=`<line class="grid" x1="60" y1="${RY(10**e)}" x2="580" y2="${RY(10**e)}"/><text x="54" y="${RY(10**e)+4}" text-anchor="end">${["100G","1T","10T","100T","1P","10P"][e-Y0]}</text>`;
+  s+=`<rect class="memzone" x="60" y="20" width="${RX(ridge)-60}" height="235"/>`;
+  s+=`<line class="ax" x1="60" y1="255" x2="580" y2="255"/><line class="ax" x1="60" y1="20" x2="60" y2="255"/>`;
+  s+=`<polyline class="rl" points="${RX(10**X0)},${RY(10**X0*g.bw)} ${RX(ridge)},${RY(g.f)} ${RX(10**X1)},${RY(g.f)}"/>`;
+  s+=`<line class="ridge" x1="${RX(ridge)}" y1="${RY(g.f)}" x2="${RX(ridge)}" y2="255"/>`;
+  s+=`<text x="${RX(ridge)+5}" y="248" style="fill:var(--k)">ridge ≈ ${ridge.toFixed(0)}</text>`;
+  s+=`<text class="lab" x="${RX(ridge)+8}" y="${RY(g.f)-8}">compute roof · ${(g.f/1e12).toFixed(0)} TFLOP/s</text>`;
+  const ang=Math.atan((RY(1*g.bw)-RY(10*g.bw))/(RX(10)-RX(1)))*180/Math.PI;
+  s+=`<text class="lab" x="${RX(0.13)}" y="${RY(0.13*g.bw)+18}" transform="rotate(-${ang} ${RX(0.13)} ${RY(0.13*g.bw)+18})">memory roof · ${(g.bw/1e12).toFixed(2)} TB/s</text>`;
+  s+=`<text x="68" y="36" style="fill:var(--pos)">memory-bound</text><text x="${RX(ridge)+8}" y="36" style="fill:var(--v)">compute-bound</text>`;
+  s+=`<text x="320" y="292" text-anchor="middle">arithmetic intensity (FLOP per byte, log scale)</text>`;
+  pts.forEach(p=>{const a=Math.min(Math.max(p.ai,10**X0),10**X1),perf=Math.min(a*g.bw,g.f);
+    s+=`<circle cx="${RX(a)}" cy="${RY(perf)}" r="${p.big?8:5}" style="fill:var(${a<ridge?"--pos":"--v"});stroke:var(--surface);stroke-width:2"/>`;
+    s+=`<text class="lab" x="${RX(a)+(p.left?-12:12)}" y="${RY(perf)+(p.below?18:-10)}" text-anchor="${p.left?"end":"start"}">${p.label}</text>`});
+  return s;
+}
+
+/* ---------- stages ---------- */
+let aiEx="add", rSlide=1.3, pfN=3, bIdx=0, kvC=3;
+const H=GPUS[0], L70=MODELS[3], W70=L70.p*2;
+const AIEX={
+ add:{t:"c = a + b",sub:"elementwise add, FP32",ai:1/12,f:`FLOPs  = 1 add per element
+Bytes  = read a (4) + read b (4) + write c (4) = 12
+AI     = 1 ÷ 12 ≈ <b>0.08 FLOP/byte</b>`,txt:"Almost nothing to do with each number. This is about as memory-bound as it gets."},
+ dec:{t:"decode, batch 1",sub:"one weight, one token, FP16",ai:1,f:`FLOPs  = 1 multiply + 1 add = 2 per weight
+Bytes  = 2 per weight (FP16)
+AI     = 2 ÷ 2 = <b>1 FLOP/byte</b>`,txt:"Every weight is fetched, used once, and thrown away until the next token. This is LLM decode."},
+ mm:{t:"4096 × 4096 matmul",sub:"square matrix multiply, FP16",ai:4096/3,f:`FLOPs  = 2 × N³          = 2 × 4096³ ≈ 137 G
+Bytes  = 3 × N² × 2      (read A, B, write C) ≈ 101 MB
+AI     = N ÷ 3           ≈ <b>1,365 FLOP/byte</b>`,txt:"Each number loaded is reused 4,096 times. Plenty of work per byte, so the cores stay busy. This is what prefill looks like."}
+};
+const PF=[1,10,100,300,1000,2000,8000];
+const BS=[1,4,16,64,128,256,295,512];
+const KC=[1024,2048,4096,8192,32768,131072];
+
+const STAGES=[
+{t:"Two speeds",viz:()=>{const per=H.f/H.bw;return`<div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat c"><span class="num">989 trillion</span><span class="lbl">FP16 operations per second</span></div><div class="stat m"><span class="num">3.35 trillion</span><span class="lbl">bytes per second from memory (HBM)</span></div></div>
+ <div class="bars"><div class="bar"><span>can compute</span><div class="track"><div class="fill" style="width:100%;background:var(--q)"></div></div><span class="val">989 T/s</span></div><div class="bar"><span>can read</span><div class="track"><div class="fill" style="width:${(3.35/989*100).toFixed(2)}%;background:var(--k)"></div></div><span class="val">3.35 T/s</span></div></div>
+ <div class="callout">In the time it takes one byte to arrive, an H100 could do about <b class="mono">${per.toFixed(0)}</b> operations. If your work doesn't have ~${per.toFixed(0)} operations for every byte, the cores sit and wait.</div>`},
+ body:`<p>Every chip has two speeds. How fast it can <b class="c">compute</b>, and how fast it can <b class="m">read</b> numbers from memory.</p><p>On an NVIDIA H100 those differ by a factor of about 300. Compute has grown much faster than memory bandwidth for decades, and the gap keeps widening.</p><p class="note">That gap is the <b>memory wall</b>. Everything on this page is about which of the two speeds limits you.</p>`},
+
+{t:"Arithmetic intensity",viz:()=>{const e=AIEX[aiEx];return`<div class="tabs">${Object.entries(AIEX).map(([k,v])=>`<button class="tab" data-ai="${k}" aria-pressed="${k===aiEx}">${v.t}</button>`).join("")}</div>
+ <span class="eyebrow">${e.sub}</span><div class="formula">${e.f}</div>
+ <div class="bars">${Object.entries(AIEX).map(([k,v])=>`<div class="bar"><span>${v.t.split(" ")[0]==="c"?"add":v.t.split(",")[0].replace(" × 4096 matmul"," matmul")}</span><div class="track"><div class="fill" style="width:${(Math.log10(v.ai)+1.2)/4.4*100}%;background:var(${k===aiEx?"--ink":"--line"})"></div></div><span class="val">${fmtAI(v.ai)}</span></div>`).join("")}</div>
+ <p class="hint">Bars on a log scale: each step right is 10× more work per byte.</p>`},
+ body:()=>`<p><b>Arithmetic intensity</b> is how many operations a piece of work does for every byte it moves from memory.</p><div class="formula">AI = FLOPs ÷ bytes moved</div><p>${AIEX[aiEx].txt}</p><p class="note">It belongs to the workload, not the chip. The same code can change it: tiling a matmul so data stays in cache, or using 16-bit numbers instead of 32-bit, moves fewer bytes and raises it.</p>`},
+
+{t:"The ridge point",viz:()=>`<div class="bars">${GPUS.map(g=>`<div class="bar"><span>${g.n.replace("NVIDIA ","").replace("GeForce ","")}</span><div class="track"><div class="fill" style="width:${g.f/g.bw/300*100}%;background:var(--k)"></div></div><span class="val">${(g.f/g.bw).toFixed(0)}</span></div>`).join("")}</div>
+ <div class="formula">ridge = peak FLOP/s ÷ bandwidth
+H100  = 989 T ÷ 3.35 T  ≈ <b>295 FLOP/byte</b></div>
+ <div class="callout">Workload AI <b>below</b> the ridge → <span class="badge mem">memory-bound</span><br>Workload AI <b>above</b> the ridge → <span class="badge cmp">compute-bound</span></div>`,
+ body:`<p>The chip has its own ratio too: peak compute divided by bandwidth. It's called the <b>ridge point</b>, and it tells you how much work per byte a workload needs before the cores, not memory, become the limit.</p><p>Compare the two numbers and you know which wall you're against. Decode at batch 1 has an intensity of about 1. Every chip here needs more than 100.</p><p class="note">The H200 has the same compute as the H100 but 43% more bandwidth, so its ridge is lower and memory-bound work runs faster on it.</p>`},
+
+{t:"The roofline",viz:()=>{const ai=10**rSlide;return`<svg class="roof" viewBox="0 0 600 300" role="img" aria-label="Roofline for an H100">${roofSVG(H,[{ai,label:"you are here",big:1,left:ai>1000},...(Math.abs(Math.log10(ai))>0.6?[{ai:1,label:"decode b=1",left:1}]:[]),...(Math.abs(Math.log10(ai/2000))>0.6?[{ai:2000,label:"prefill",below:1,left:1}]:[])])}</svg>
+ <label class="hint" for="rs">Slide the workload's arithmetic intensity: <b class="mono">${fmtAI(ai)}</b> FLOP/byte</label><input id="rs" type="range" min="-1" max="4" step="0.01" value="${rSlide}">
+ <div class="callout">At ${fmtAI(ai)} FLOP/byte an H100 delivers <b class="mono">${(Math.min(ai*H.bw,H.f)/1e12).toFixed(1)} TFLOP/s</b>, ${(Math.min(ai*H.bw,H.f)/H.f*100).toFixed(1)}% of its peak. <span class="badge ${ai<H.f/H.bw?"mem":"cmp"}">${ai<H.f/H.bw?"memory-bound":"compute-bound"}</span></div>`},
+ body:`<p>Put the two speeds on one chart and you get the <b>roofline</b>. Whatever you run, its speed is capped by the lower of two roofs:</p><div class="formula">achievable = min( AI × bandwidth , peak )</div><p>On the slope, speed grows with intensity: doubling the work per byte doubles the speed. Past the ridge it's flat, because the cores are already full.</p><p class="note">So if your intensity is 64 and the bandwidth is 64 GB/s, you get 64 × 64 = 4,096 GFLOP/s, unless that's above the peak.</p>`},
+
+{t:"Prefill",viz:()=>{const n=PF[pfN],tc=2*L70.p*n/H.f,tm=W70/H.bw,mx=Math.max(tc,tm);return`<div class="tabs">${PF.map((p,i)=>`<button class="tab" data-pf="${i}" aria-pressed="${i===pfN}">${p.toLocaleString()}</button>`).join("")}</div><span class="hint">Prompt length in tokens · Llama 3 70B, FP16, H100</span>
+ <div class="formula">FLOPs = 2 × 70.6B × ${n.toLocaleString().padEnd(6)} = <b class="c">${(2*L70.p*n/1e12).toFixed(n<10?2:1)} TFLOP</b>
+Bytes = weights, read once   = <b class="m">141 GB</b>
+AI    ≈ prompt length        = <b>${n.toLocaleString()} FLOP/byte</b></div>
+ <div class="bars"><div class="bar"><span>maths</span><div class="track"><div class="fill" style="width:${tc/mx*100}%;background:var(--q)"></div></div><span class="val">${fmtT(tc)}</span></div><div class="bar"><span>memory</span><div class="track"><div class="fill" style="width:${tm/mx*100}%;background:var(--k)"></div></div><span class="val">${fmtT(tm)}</span></div></div>
+ <div class="callout">Time to first token ≈ <b class="mono">${fmtT(mx)}</b> · <span class="badge ${tm>tc?"mem":"cmp"}">${tm>tc?"memory-bound":"compute-bound"}</span></div>`},
+ body:`<p><b>Prefill</b> is reading your prompt. All the prompt tokens go through every layer together, as one big matrix multiply.</p><p>Each weight is fetched from memory once and then used for every token in the prompt. So the intensity is roughly the prompt length.</p><p>Past about 300 tokens (the H100's ridge) the maths takes longer than the reading. Prefill becomes <b>compute-bound</b>, and a longer prompt just means proportionally more maths.</p><p class="note">This is the pause before the first word appears: the time to first token.</p>`},
+
+{t:"Decode",viz:()=>{const tc=2*L70.p/H.f,tm=W70/H.bw;return`<div class="formula">FLOPs = 2 × 70.6B × 1  = <b class="c">141 GFLOP</b>
+Bytes = all 141 GB      = <b class="m">141 GB</b>
+AI    = <b>1 FLOP/byte</b>   ← 295× below the ridge</div>
+ <div class="bars"><div class="bar"><span>maths</span><div class="track"><div class="fill" style="width:${tc/tm*100}%;background:var(--q)"></div></div><span class="val">${fmtT(tc)}</span></div><div class="bar"><span>memory</span><div class="track"><div class="fill" style="width:100%;background:var(--k)"></div></div><span class="val">${fmtT(tm)}</span></div></div>
+ <div class="formula">max tokens/s ≈ bandwidth ÷ model bytes
+             = 3,350 GB/s ÷ 141 GB  ≈ <b>24 tokens/s</b></div>
+ <div class="callout">The maths bar is there: it's just ${(tc/tm*100).toFixed(1)}% of the memory bar. For 99.7% of each step, the cores wait.</div>`},
+ body:`<p><b>Decode</b> is generating the answer, one token at a time. Each new token depends on the one before it, so they can't be done together.</p><p>To produce a single token, every weight in the model has to be read again, and each is used for just one multiply and one add.</p><p>So the speed limit is simple: bandwidth ÷ model size. No amount of extra compute helps. Only fewer bytes, more bandwidth, or more work per byte.</p><p class="note">This is the "batch size 1" case: one user, one sequence. Next: what happens with more.</p>`},
+
+{t:"Batching",viz:()=>{const B=BS[bIdx],tm=W70/H.bw,tc=2*L70.p*B/H.f,t=Math.max(tm,tc),ai=B;return`<div class="tabs">${BS.map((b,i)=>`<button class="tab" data-bs="${i}" aria-pressed="${i===bIdx}">${b}</button>`).join("")}</div><span class="hint">Users decoding together · Llama 3 70B, FP16, H100 · ignoring the KV cache for now</span>
+ <div class="formula">FLOPs = 2 × 70.6B × ${String(B).padEnd(4)} = <b class="c">${(2*L70.p*B/1e12).toFixed(2)} TFLOP</b>
+Bytes = weights, read once = <b class="m">141 GB</b>
+AI    ≈ batch size         = <b>${B} FLOP/byte</b></div>
+ <div class="stats"><div class="stat"><span class="num">${fmtN(1/t)}</span><span class="lbl">tokens/s per user</span></div><div class="stat"><span class="num">${fmtN(B/t)}</span><span class="lbl">tokens/s in total</span></div><div class="stat"><span class="num">${(Math.min(ai*H.bw,H.f)/H.f*100).toFixed(ai<10?1:0)}%</span><span class="lbl">of peak compute used</span></div></div>
+ <div class="callout"><span class="badge ${tm>=tc?"mem":"cmp"}">${tm>=tc?"memory-bound":"compute-bound"}</span> ${tm>=tc?"Each user still gets ~24 tokens/s, but the GPU serves "+B+"× as many tokens for the same memory traffic.":"Past the ridge the maths becomes the limit, so each user's tokens start arriving more slowly."}</div>`},
+ body:`<p>Providers don't serve one user at a time. They put many users' next tokens into the same step: a <b>batch</b>.</p><p>The weights are read once per step but used for every user in the batch. So the intensity rises with batch size, and so does total throughput, almost for free, until it reaches the ridge at about 295.</p><p class="note">This is why serving one person is expensive and serving thousands is cheap per token. But there's a catch: the KV cache.</p>`},
+
+{t:"The KV cache catch",viz:()=>{const B=32,C=KC[kvC],kv=kvTok(L70)*C*B,tot=W70+kv,ai=2*L70.p*B/tot,tm=tot/H.bw;return`<div class="tabs">${KC.map((c,i)=>`<button class="tab" data-kc="${i}" aria-pressed="${i===kvC}">${c>=1024?(c/1024)+"k":c}</button>`).join("")}</div><span class="hint">Context per user · 32 users · Llama 3 70B · 320 KB of KV per token</span>
+ <div class="stackbar"><div style="width:${W70/tot*100}%;background:var(--k)">${W70/tot>.18?"weights 141 GB":""}</div><div style="width:${kv/tot*100}%;background:var(--v)">${kv/tot>.18?"KV "+fmtB(kv):""}</div></div>
+ <div class="formula">bytes per step = weights + every user's cache
+               = 141 GB + ${fmtB(kv).padEnd(7)} = <b class="m">${fmtB(tot)}</b>
+AI             = ${(2*L70.p*B/1e12).toFixed(1)} TFLOP ÷ ${fmtB(tot)} = <b>${ai.toFixed(1)} FLOP/byte</b>  (was 32)</div>
+ <div class="callout">${tot>H.mem?`That's ${fmtB(tot)} of memory, about ${Math.ceil(tot/H.mem)} H100s' worth, and still only ${fmtN(H.bw/tot)} tokens/s per user per GPU's bandwidth.`:`Fits on one H100 with ${fmtB(H.mem-tot)} spare, at about ${fmtN(H.bw/tot)} tokens/s per user.`}</div>`},
+ body:`<p>Each user has their own <b class="kv">KV cache</b>: the key and value of every token in their context (prompt <b>and</b> output so far), in every layer.</p><div class="formula">KV per token = 2 × layers × KV heads × head size × bytes
+Llama 3 70B  = 2 × 80 × 8 × 128 × 2 = 320 KB</div><p>Unlike the weights, the cache isn't shared, so it's read separately for every user on every step. Make the contexts long and the cache outweighs the model, and the batching gain disappears.</p><p class="note">This is why long context is expensive, and why modern models use grouped-query attention: Llama 3 70B's 64 query heads share just 8 KV heads, an 8× smaller cache.</p>`}
+];
+
+const rail=$("rail"),viz=$("viz");let cur=0;
+rail.innerHTML=STAGES.map((s,i)=>`<button class="st" role="tab" data-i="${i}"><span class="n">${String(i+1).padStart(2,"0")}</span><span class="t">${s.t}</span></button>`).join("");
+function render(){
+  const s=STAGES[cur];
+  rail.querySelectorAll(".st").forEach((b,i)=>b.setAttribute("aria-current",i===cur));
+  viz.innerHTML=s.viz();
+  $("stEye").textContent=`Stage ${cur+1} of ${STAGES.length}`;
+  $("stTitle").textContent=s.t;
+  $("stBody").innerHTML=typeof s.body==="function"?s.body():s.body;
+  $("prev").disabled=cur===0;$("next").disabled=cur===STAGES.length-1;
+  const rs=$("rs");if(rs)rs.oninput=e=>{rSlide=+e.target.value;const v=e.target.value;render();const n=$("rs");if(n){n.value=v;n.focus()}};
+}
+rail.addEventListener("click",e=>{const b=e.target.closest(".st");if(b){cur=+b.dataset.i;render()}});
+$("prev").onclick=()=>{if(cur>0){cur--;render()}};
+$("next").onclick=()=>{if(cur<STAGES.length-1){cur++;render()}};
+viz.addEventListener("click",e=>{const t=e.target.closest(".tab");if(!t)return;
+  if(t.dataset.ai)aiEx=t.dataset.ai;if(t.dataset.pf)pfN=+t.dataset.pf;if(t.dataset.bs)bIdx=+t.dataset.bs;if(t.dataset.kc)kvC=+t.dataset.kc;render()});
+render();
+
+/* ---------- calculator ---------- */
+const CB=[1,2,4,8,16,32,64,128,256,512],CC=[1024,4096,8192,32768,65536,100000,131072,200000],CP=[128,512,1024,2048,8192,32768,100000];
+MODELS.forEach((m,i)=>$("cModel").add(new Option(m.n,i)));GPUS.forEach((g,i)=>$("cGpu").add(new Option(g.n,i)));
+$("cModel").value=3;
+function calc(){
+  const m=MODELS[$("cModel").value],g=GPUS[$("cGpu").value],by=+$("cPrec").value;
+  const B=CB[$("cB").value],C=CC[$("cC").value],P=CP[$("cP").value];
+  $("cBv").textContent=B;$("cCv").textContent=C.toLocaleString();$("cPv").textContent=P.toLocaleString();
+  const W=m.p*by,kt=kvTok(m),KV=kt*C*B,read=W+KV,fl=2*m.p*B,ai=fl/read,ridge=g.f/g.bw;
+  const t=Math.max(read/g.bw,fl/g.f),ttft=Math.max(2*m.p*P/g.f,W/g.bw);
+  $("oAI").textContent=fmtAI(ai);$("oTPS").textContent=fmtN(1/t);$("oAgg").textContent=fmtN(B/t);
+  $("oW").textContent=fmtB(W);$("oKV").textContent=fmtB(KV);$("oTT").textContent=fmtT(ttft);
+  $("oBadge").innerHTML=`<span class="badge ${ai<ridge?"mem":"cmp"}">${ai<ridge?"memory-bound":"compute-bound"}</span> <span class="hint">Decode intensity ${fmtAI(ai)} vs. this chip's ridge of ${ridge.toFixed(0)}. KV is ${(kt/1024).toFixed(0)} KB per token for ${m.n}.</span>`;
+  $("cRoof").innerHTML=roofSVG(g,[{ai,label:"decode",big:1},{ai:P*2/by,label:"prefill",below:1,left:1}]);
+  $("cRead").innerHTML=`<div style="width:${W/read*100}%;background:var(--k)">${W/read>.15?"weights "+fmtB(W):""}</div><div style="width:${KV/read*100}%;background:var(--v)">${KV/read>.15?"KV "+fmtB(KV):""}</div>`;
+  $("cReadNote").textContent=KV>W?`The cache is ${(KV/W).toFixed(1)}× the size of the weights, so most of every step is spent reading cache, not model. Shorter contexts or fewer users would help more than a faster chip's compute.`:B===1?`One user: the weights are almost all of it, read in full for every single token.`:`The weights are shared by all ${B} users, which is what makes batching pay off. Each user's cache is not.`;
+  const need=read,mx=Math.max(need,g.mem);
+  $("cFit").innerHTML=[["needed",need,"--ink"],["one GPU",g.mem,"--line"]].map(([l,v,c])=>`<div class="bar"><span>${l}</span><div class="track"><div class="fill" style="width:${v/mx*100}%;background:var(${c})"></div></div><span class="val">${fmtB(v)}</span></div>`).join("");
+  $("cFitNote").textContent=need>g.mem?`Needs at least ${Math.ceil(need/g.mem).toLocaleString()} of these GPUs just to hold it. Splitting across GPUs also adds their bandwidth together, so real multi-GPU speeds can beat the single-chip numbers above.`:`Fits on one ${g.n}, with ${fmtB(g.mem-need)} to spare (activations and runtime overhead need some of that).`;
+}
+["cModel","cGpu","cPrec","cB","cC","cP"].forEach(id=>$(id).addEventListener("input",calc));calc();
+
+/* ---------- table ---------- */
+const ROWS=MODELS.map(m=>({n:m.n,w:m.p*2,kv:kvTok(m),rd:m.p*2}));
+ROWS.splice(6,0,{n:"DeepSeek-V3 (MoE, 671B total)",w:671e9*2,kv:61*(512+64)*2,rd:37e9*2,moe:1});
+let h=`<thead><tr><th>Model</th><th class="n">Weights FP16</th><th class="n">KV / token</th><th class="n">KV at 128k</th><th class="n">Max decode, b=1</th></tr></thead><tbody>`;
+ROWS.forEach(r=>h+=`<tr><td>${r.n}</td><td class="n">${fmtB(r.w)}</td><td class="n">${fmtKB(r.kv)}</td><td class="n">${fmtB(r.kv*131072)}</td><td class="n">${(H.bw/r.rd).toFixed(r.rd>3e11?1:0)} tok/s${r.moe?"*":""}</td></tr>`);
+$("tbl").innerHTML=h+`</tbody>`;
+$("tbl").insertAdjacentHTML("afterend",`<p class="hint">* Counts only the ~37B parameters active per token. At larger batches, more experts get touched each step and the reads grow.</p>`);
+})();
+</script>
+</body>
+</html>
